@@ -189,6 +189,13 @@ export interface AppInfo {
   backups_dir: string;
 }
 
+export interface UpdateInfo {
+  current: string;
+  latest: string;
+  update_available: boolean;
+  release_url: string;
+}
+
 export const listAccounts = () => invoke<Account[]>("list_accounts");
 export const desktopStatus = () => invoke<DesktopStatus>("desktop_status");
 export const forceQuitDesktop = () => invoke<boolean>("force_quit_desktop");
@@ -234,5 +241,6 @@ export const backupNow = () => invoke<string>("backup_now");
 export const deleteBackup = (name: string) => invoke<void>("delete_backup", { name });
 export const restoreBackup = (name: string) => invoke<void>("restore_backup", { name });
 export const appInfo = () => invoke<AppInfo>("app_info");
+export const checkForUpdate = () => invoke<UpdateInfo>("check_for_update");
 export const autostartEnabled = () => invoke<boolean>("autostart_enabled");
 export const setAutostart = (enabled: boolean) => invoke<void>("set_autostart", { enabled });

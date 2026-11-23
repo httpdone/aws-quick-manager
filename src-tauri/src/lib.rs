@@ -1,4 +1,5 @@
 pub mod quick;
+mod updates;
 
 use quick::{accounts, api, credstore, desktop, device_ids, manage, oauth, profiles, switcher, vault};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -372,13 +373,18 @@ struct AppInfo {
 }
 
 #[tauri::command]
-fn app_info() -> AppInfo {
+fn app_info(app: tauri::AppHandle) -> AppInfo {
     AppInfo {
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: app.package_info().version.to_string(),
         base_dir: profiles::base_dir().display().to_string(),
         vault_dir: vault::dir().display().to_string(),
         backups_dir: switcher::backups_dir().display().to_string(),
     }
+}
+
+#[tauri::command]
+async fn check_for_update(app: tauri::AppHandle) -> Result<updates::UpdateInfo, String> {
+    updates::check(&app.package_info().version).await
 }
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -467,6 +473,7 @@ pub fn run() {
             delete_backup,
             restore_backup,
             app_info,
+            check_for_update,
             autostart_enabled,
             set_autostart
         ])
