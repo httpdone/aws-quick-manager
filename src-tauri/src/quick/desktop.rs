@@ -27,7 +27,6 @@
 use serde::Serialize;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-#[cfg(any(windows, target_os = "macos"))]
 use std::process::Command;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
