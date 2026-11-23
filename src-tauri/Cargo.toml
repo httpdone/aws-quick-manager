@@ -5,6 +5,7 @@ description = "Account manager and switcher for the Amazon Quick desktop app"
 authors = ["httpdone"]
 license = "MIT"
 edition = "2024"
+default-run = "aws-quick-manager"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -19,14 +20,23 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
+tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11.1"
+sha1 = "0.10"
 hex = "0.4.3"
 dirs = "6.0.0"
 thiserror = "2.0.20"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "native-tls"] }
+url = "=2.5.8"
+rand = "=0.10.3"
+base64 = "0.23.1"
+tokio = { version = "1.54.1", features = ["net", "io-util", "time", "macros", "rt-multi-thread", "sync"] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security_Credentials"] }

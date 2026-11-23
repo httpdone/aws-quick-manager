@@ -116,31 +116,41 @@ pub fn delete_value(store: &dyn RawStore, target: &str) -> Result<(), CredError>
     Ok(())
 }
 
-/// The account's session JSON, from the plain target or its `session@` twin.
-pub fn read_session(store: &dyn RawStore, target: &str) -> Result<Option<Value>, CredError> {
+/// The account's session JSON text, verbatim, from the plain target or its
+/// `session@` twin. Only text that parses as JSON is returned.
+pub fn read_session_text(store: &dyn RawStore, target: &str) -> Result<Option<String>, CredError> {
     for t in [target.to_string(), format!("{USER}@{target}")] {
         if let Some(text) = read_value(store, &t)? {
-            if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                return Ok(Some(v));
+            if serde_json::from_str::<Value>(&text).is_ok() {
+                return Ok(Some(text));
             }
         }
     }
     Ok(None)
 }
 
-/// Write the session to the target and, on Windows, its `session@` twin too.
-#[allow(dead_code)]
-pub fn write_session(store: &dyn RawStore, target: &str, session: &Value) -> Result<(), CredError> {
-    let text = session.to_string();
+/// The account's session JSON, from the plain target or its `session@` twin.
+pub fn read_session(store: &dyn RawStore, target: &str) -> Result<Option<Value>, CredError> {
+    Ok(read_session_text(store, target)?.and_then(|t| serde_json::from_str(&t).ok()))
+}
+
+/// Write session JSON text verbatim to the target and, on Windows, its
+/// `session@` twin too.
+pub fn write_session_text(store: &dyn RawStore, target: &str, text: &str) -> Result<(), CredError> {
     let chunked = cfg!(windows);
-    write_value(store, target, &text, chunked)?;
+    write_value(store, target, text, chunked)?;
     if chunked {
-        write_value(store, &format!("{USER}@{target}"), &text, true)?;
+        write_value(store, &format!("{USER}@{target}"), text, true)?;
     }
     Ok(())
 }
 
+/// Write the session to the target and, on Windows, its `session@` twin too.
 #[allow(dead_code)]
+pub fn write_session(store: &dyn RawStore, target: &str, session: &Value) -> Result<(), CredError> {
+    write_session_text(store, target, &session.to_string())
+}
+
 pub fn delete_session(store: &dyn RawStore, target: &str) -> Result<(), CredError> {
     delete_value(store, target)?;
     if cfg!(windows) {

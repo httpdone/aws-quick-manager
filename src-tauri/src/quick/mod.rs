@@ -1,3 +1,13 @@
 pub mod accounts;
+pub mod api;
+pub mod cloud_sessions;
 pub mod credstore;
+pub mod desktop;
+pub mod device;
+pub mod device_ids;
+pub mod manage;
+pub mod oauth;
 pub mod profiles;
+pub mod sessions;
+pub mod switcher;
+pub mod vault;
