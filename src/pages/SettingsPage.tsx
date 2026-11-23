@@ -124,6 +124,10 @@ export default function SettingsPage({ info, desktop, onRefreshDesktop }: Props)
 
       <p className="about">
         AWS Quick Manager {info ? `v${info.version}` : ""} · 非官方工具，与 Amazon Web Services 无关 · MIT
+        {" · "}
+        <a href="https://github.com/httpdone/aws-quick-manager" target="_blank" rel="noopener noreferrer">
+          GitHub 主页
+        </a>
       </p>
     </div>
   );
