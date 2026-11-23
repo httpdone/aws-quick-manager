@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Account, importDesktopAccount, loginAccount, manualLoginStart, manualLoginStatus, manualLoginSubmit } from "../lib/api";
+import { useT } from "../i18n";
 import { hue } from "../lib/format";
 import { who } from "../lib/status";
 import Icon, { IconName } from "./Icon";
@@ -15,13 +16,14 @@ interface Props {
   onDone: (message: string) => void;
 }
 
-const METHODS: { id: Method; icon: IconName; title: string; desc: string }[] = [
-  { id: "web", icon: "globe", title: "浏览器登录", desc: "在本机浏览器登录，完成后自动保存" },
-  { id: "local", icon: "monitor", title: "从 Quick 导入", desc: "导入 Quick 里已登录的账号" },
-  { id: "manual", icon: "link", title: "复制登录地址", desc: "浏览器在另一台电脑上时使用" },
+const METHODS: { id: Method; icon: IconName }[] = [
+  { id: "web", icon: "globe" },
+  { id: "local", icon: "monitor" },
+  { id: "manual", icon: "link" },
 ];
 
 export default function AddAccountDialog({ accounts, onClose, onDone }: Props) {
+  const t = useT();
   const importable = accounts.filter((a) => a.on_desktop && !a.in_vault);
   const [method, setMethod] = useState<Method>(importable.length > 0 ? "local" : "web");
   const [busy, setBusy] = useState(false);
@@ -49,7 +51,7 @@ export default function AddAccountDialog({ accounts, onClose, onDone }: Props) {
     setError("");
     try {
       const r = await loginAccount();
-      onDone(`已添加 ${r.email || r.display_name}`);
+      onDone(t.add.added(r.email || r.display_name));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -67,16 +69,16 @@ export default function AddAccountDialog({ accounts, onClose, onDone }: Props) {
         if (await importDesktopAccount(id)) done += 1;
         else failed.push(id);
       } catch (e) {
-        failed.push(`${id}：${String(e)}`);
+        failed.push(`${id}: ${String(e)}`);
       }
     }
     setBusy(false);
     if (failed.length === 0 && done > 0) {
-      onDone(`已从 Quick 导入 ${done} 个账号`);
+      onDone(t.add.importedAll(done));
     } else if (done > 0) {
-      onDone(`已导入 ${done} 个，${failed.length} 个没有导入成功`);
+      onDone(t.add.importedSome(done, failed.length));
     } else {
-      setError(failed.length ? `没有导入成功：${failed.join("；")}` : "没有导入成功，Quick 的凭据可能读不到");
+      setError(failed.length ? t.add.importFailedList(failed.join(t.common.joinSep)) : t.add.importFailed);
     }
   };
 
@@ -121,7 +123,7 @@ export default function AddAccountDialog({ accounts, onClose, onDone }: Props) {
         if (status.error) setError(status.error);
         if (status.step === "done" && status.account) {
           alive = false;
-          onDone(`已添加 ${status.account.email || status.account.display_name}`);
+          onDone(t.add.added(status.account.email || status.account.display_name));
         }
       } catch (e) {
         if (alive) setError(String(e));
@@ -140,37 +142,37 @@ export default function AddAccountDialog({ accounts, onClose, onDone }: Props) {
   const footer = (
     <>
       <button className="btn ghost" onClick={onClose} disabled={busy}>
-        取消
+        {t.common.cancel}
       </button>
       {method === "web" && (
         <button className="btn primary" onClick={startWeb} disabled={busy}>
           {busy ? <Spinner /> : <Icon name="external" size={14} />}
-          {busy ? "等待浏览器登录…" : "打开登录页"}
+          {busy ? t.add.waitingBrowser : t.add.openLogin}
         </button>
       )}
       {method === "local" && (
         <button className="btn primary" onClick={importLocal} disabled={busy || selected.size === 0}>
           {busy ? <Spinner /> : <Icon name="download" size={14} />}
-          {busy ? "导入中…" : `导入 ${selected.size} 个`}
+          {busy ? t.add.importing : t.add.importCount(selected.size)}
         </button>
       )}
       {method === "manual" &&
         (manualUrl ? (
           <button className="btn primary" onClick={submitManual} disabled={busy || !pasted.trim()}>
             {busy && <Spinner />}
-            提交地址
+            {t.add.submitUrl}
           </button>
         ) : (
           <button className="btn primary" onClick={startManual} disabled={busy}>
             {busy && <Spinner />}
-            生成登录地址
+            {t.add.generateUrl}
           </button>
         ))}
     </>
   );
 
   return (
-    <Modal title="添加账号" subtitle="新账号先存进账号库，不会退出 Quick；第一次切换时才写进 Quick。" onClose={onClose} footer={footer} size="lg" locked={busy}>
+    <Modal title={t.add.title} subtitle={t.add.subtitle} onClose={onClose} footer={footer} size="lg" locked={busy}>
       <div className="methods">
         {METHODS.map((m) => (
           <button key={m.id} className={cx("method", method === m.id && "on")} onClick={() => pick(m.id)} disabled={busy}>
@@ -178,10 +180,10 @@ export default function AddAccountDialog({ accounts, onClose, onDone }: Props) {
               <Icon name={m.icon} size={18} />
             </span>
             <b>
-              {m.title}
+              {t.add.methods[m.id].title}
               {m.id === "local" && importable.length > 0 && <em>{importable.length}</em>}
             </b>
-            <small>{m.desc}</small>
+            <small>{t.add.methods[m.id].desc}</small>
           </button>
         ))}
       </div>
@@ -193,17 +195,17 @@ export default function AddAccountDialog({ accounts, onClose, onDone }: Props) {
           {busy ? (
             <div className="progressLine">
               <Spinner size={16} />
-              <span>已在浏览器打开 Amazon 登录页，登录完成后这里会自动继续。</span>
+              <span>{t.add.webWaiting}</span>
             </div>
           ) : (
             <ol className="steps">
               <li>
                 <Icon name="external" size={14} />
-                <span>点"打开登录页"，在浏览器里登录 Amazon Quick 账号</span>
+                <span>{t.add.webStep1}</span>
               </li>
               <li>
                 <Icon name="check" size={14} />
-                <span>浏览器提示完成后回到这里，账号会自动出现在列表里</span>
+                <span>{t.add.webStep2}</span>
               </li>
             </ol>
           )}
@@ -213,19 +215,19 @@ export default function AddAccountDialog({ accounts, onClose, onDone }: Props) {
       {method === "local" && (
         <div className="methodBody">
           {importable.length === 0 ? (
-            <Empty icon="monitor" title="没有可导入的账号">
-              <p>Quick 里已登录的账号都已经在账号库里了。</p>
+            <Empty icon="monitor" title={t.add.nothingToImport}>
+              <p>{t.add.allImported}</p>
             </Empty>
           ) : (
             <>
               <div className="pickHead">
-                <span>Quick 里已登录、账号库还没有的账号</span>
+                <span>{t.add.importableHead}</span>
                 <button
                   className="linkBtn"
                   onClick={() => setSelected(selected.size === importable.length ? new Set() : new Set(importable.map((a) => a.id)))}
                   disabled={busy}
                 >
-                  {selected.size === importable.length ? "全不选" : "全选"}
+                  {selected.size === importable.length ? t.add.selectNone : t.add.selectAll}
                 </button>
               </div>
               <ul className="pickList">
@@ -238,7 +240,7 @@ export default function AddAccountDialog({ accounts, onClose, onDone }: Props) {
                         <b className="truncate">{who(a)}</b>
                         <small className="truncate">{a.email || a.id}</small>
                       </span>
-                      {a.active && <span className="tag accent">使用中</span>}
+                      {a.active && <span className="tag accent">{t.common.inUse}</span>}
                     </label>
                   </li>
                 ))}
@@ -254,21 +256,21 @@ export default function AddAccountDialog({ accounts, onClose, onDone }: Props) {
             <ol className="steps">
               <li>
                 <Icon name="link" size={14} />
-                <span>生成登录地址，复制到任意一台电脑的浏览器里打开</span>
+                <span>{t.add.manualStep1}</span>
               </li>
               <li>
                 <Icon name="copy" size={14} />
-                <span>浏览器在本机时会自动完成；在别的电脑上时，把跳转后的地址栏地址粘贴回来（一共两次）</span>
+                <span>{t.add.manualStep2}</span>
               </li>
             </ol>
           ) : (
             <div className="manualFlow">
-              <UrlStep n={1} label="登录地址" url={manualUrl} onOpen={open} done={!!authorizeUrl} />
-              {authorizeUrl && <UrlStep n={2} label="授权地址" url={authorizeUrl} onOpen={open} />}
+              <UrlStep n={1} label={t.add.loginUrl} url={manualUrl} onOpen={open} done={!!authorizeUrl} />
+              {authorizeUrl && <UrlStep n={2} label={t.add.authorizeUrl} url={authorizeUrl} onOpen={open} />}
               <label className="pasteField">
                 <span>
                   <em className="stepNo">{authorizeUrl ? 3 : 2}</em>
-                  {authorizeUrl ? "授权完成后，把浏览器地址栏的地址粘到这里" : "第一次跳转后，把浏览器地址栏的地址粘到这里"}
+                  {authorizeUrl ? t.add.pasteAfterAuthorize : t.add.pasteAfterRedirect}
                 </span>
                 <textarea
                   value={pasted}
@@ -280,9 +282,9 @@ export default function AddAccountDialog({ accounts, onClose, onDone }: Props) {
               </label>
               <div className="manualHint">
                 <Spinner size={12} />
-                <span>浏览器在本机时会自动完成，无需粘贴。</span>
+                <span>{t.add.autoCompletes}</span>
                 <button className="linkBtn" onClick={startManual} disabled={busy}>
-                  重新生成
+                  {t.add.regenerate}
                 </button>
               </div>
             </div>
@@ -294,6 +296,7 @@ export default function AddAccountDialog({ accounts, onClose, onDone }: Props) {
 }
 
 function UrlStep({ n, label, url, onOpen, done }: { n: number; label: string; url: string; onOpen: (url: string) => void; done?: boolean }) {
+  const t = useT();
   return (
     <div className={cx("urlStep", done && "done")}>
       <span className="urlLabel">
@@ -302,10 +305,10 @@ function UrlStep({ n, label, url, onOpen, done }: { n: number; label: string; ur
       </span>
       <div className="urlRow">
         <input readOnly value={url} onFocus={(e) => e.currentTarget.select()} className="mono" />
-        <CopyButton text={url} label="复制" />
+        <CopyButton text={url} label={t.common.copy} />
         <button className="btn ghost sm" onClick={() => onOpen(url)}>
           <Icon name="external" size={13} />
-          打开
+          {t.common.open}
         </button>
       </div>
     </div>

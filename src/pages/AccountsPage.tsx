@@ -1,4 +1,5 @@
 import { RefObject, useEffect, useMemo, useState } from "react";
+import { useT } from "../i18n";
 import { Account, DesktopStatus, Usage } from "../lib/api";
 import { fmtDate, fmtHours, fmtRelative, fmtTime, hue, isoSecs, nextResetLabel } from "../lib/format";
 import { getStored } from "../lib/prefs";
@@ -33,6 +34,7 @@ const lastUsed = (a: Account) => isoSecs(a.last_used_at);
 
 export default function AccountsPage(props: Props) {
   const { accounts, usages, usageErrors, usageLoading, desktop, loading, searchRef } = props;
+  const t = useT();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [sort, setSort] = useState<Sort>(() => getStored("aqm_sort", SORTS, "default"));
@@ -58,12 +60,12 @@ export default function AccountsPage(props: Props) {
     let attention = 0;
     let vault = 0;
     for (const a of list) {
-      if (accountStatus(a).tone === "ok") ok += 1;
+      if (accountStatus(a, t).tone === "ok") ok += 1;
       else attention += 1;
       if (!a.on_desktop) vault += 1;
     }
     return { ok, attention, vault };
-  }, [list]);
+  }, [list, t]);
 
   const current = list.find((a) => a.active);
   const quotaKnown = list.filter((a) => leftHours(usages[a.id]) >= 0);
@@ -73,12 +75,12 @@ export default function AccountsPage(props: Props) {
   const recommended = useMemo(() => {
     let best: Account | null = null;
     for (const a of list) {
-      if (!canSwitch(a) || accountStatus(a).tone !== "ok") continue;
+      if (!canSwitch(a) || accountStatus(a, t).tone !== "ok") continue;
       const left = leftHours(usages[a.id]);
       if (left > 0 && (!best || left > leftHours(usages[best.id]))) best = a;
     }
     return best?.id ?? null;
-  }, [list, usages]);
+  }, [list, usages, t]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -86,9 +88,9 @@ export default function AccountsPage(props: Props) {
       if (q && !`${a.display_name} ${a.email} ${a.id} ${a.role}`.toLowerCase().includes(q)) return false;
       switch (filter) {
         case "ok":
-          return accountStatus(a).tone === "ok";
+          return accountStatus(a, t).tone === "ok";
         case "attention":
-          return accountStatus(a).tone !== "ok";
+          return accountStatus(a, t).tone !== "ok";
         case "vault":
           return !a.on_desktop;
         default:
@@ -107,7 +109,7 @@ export default function AccountsPage(props: Props) {
           return Number(y.active) - Number(x.active) || lastUsed(y) - lastUsed(x);
       }
     });
-  }, [list, query, filter, sort, usages]);
+  }, [list, query, filter, sort, usages, t]);
 
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageIndex = Math.min(page, pages - 1);
@@ -136,60 +138,60 @@ export default function AccountsPage(props: Props) {
     <div className="page">
       <header className="pageHead">
         <div>
-          <h1>账号</h1>
-          <p className="pageSub">Quick 桌面端的全部账号，一键切换</p>
+          <h1>{t.app.pages.accounts}</h1>
+          <p className="pageSub">{t.accounts.sub}</p>
         </div>
         <div className="actions">
-          <button className="btn ghost" onClick={props.onRefresh} disabled={loading} title="从 Quick 同步账号并刷新额度（Ctrl+R）">
+          <button className="btn ghost" onClick={props.onRefresh} disabled={loading} title={t.accounts.refreshTitle}>
             <Icon name="refresh" className={loading ? "spin" : ""} />
-            刷新
+            {t.common.refresh}
           </button>
           <button className="btn primary" onClick={props.onAdd} title="Ctrl+N">
             <Icon name="plus" />
-            添加账号
+            {t.accounts.add}
           </button>
         </div>
       </header>
 
       {desktop && !desktop.installed && (
-        <Alert tone="warn">没有找到 Quick 桌面端。账号仍可管理，切换后需要手动打开 Quick。</Alert>
+        <Alert tone="warn">{t.accounts.notInstalled}</Alert>
       )}
 
       {list.length > 0 && (
         <div className="stats">
           <div className="stat">
-            <span className="statLabel">账号</span>
+            <span className="statLabel">{t.accounts.statAccounts}</span>
             <b className="statValue">{list.length}</b>
-            <span className="statSub">{list.length - counts.vault} 个已写入 Quick</span>
+            <span className="statSub">{t.accounts.onDesktop(list.length - counts.vault)}</span>
           </div>
           <div className="stat">
-            <span className="statLabel">当前账号</span>
+            <span className="statLabel">{t.common.currentAccount}</span>
             <b className="statValue small truncate" title={current ? who(current) : undefined}>
               {current ? who(current) : "—"}
             </b>
             <span className="statSub truncate">
               {current
                 ? leftHours(usages[current.id]) >= 0
-                  ? `剩 ${fmtHours(leftHours(usages[current.id]))}`
+                  ? t.accounts.left(fmtHours(leftHours(usages[current.id])))
                   : current.email || current.id
-                : "Quick 里还没有当前账号"}
+                : t.accounts.noCurrent}
             </span>
           </div>
           <div className="stat">
-            <span className="statLabel">可用额度合计</span>
+            <span className="statLabel">{t.accounts.statTotal}</span>
             <b className="statValue">{quotaKnown.length ? fmtHours(totalLeft) : "—"}</b>
             <span className="statSub">
-              {quotaKnown.length}/{list.filter(canQuota).length} 个账号已读取
+              {t.accounts.quotaRead(quotaKnown.length, list.filter(canQuota).length)}
             </span>
           </div>
           <button
             className={cx("stat", "statButton", counts.attention > 0 && "statBad")}
             onClick={() => setFilter(counts.attention > 0 ? "attention" : "all")}
-            title={counts.attention > 0 ? "只看需要处理的账号" : undefined}
+            title={counts.attention > 0 ? t.accounts.onlyAttention : undefined}
           >
-            <span className="statLabel">需要处理</span>
+            <span className="statLabel">{t.accounts.statAttention}</span>
             <b className="statValue">{counts.attention}</b>
-            <span className="statSub">{counts.attention > 0 ? "点击查看" : "全部正常"}</span>
+            <span className="statSub">{counts.attention > 0 ? t.accounts.clickToView : t.accounts.allOk}</span>
           </button>
         </div>
       )}
@@ -209,7 +211,7 @@ export default function AccountsPage(props: Props) {
                   e.currentTarget.blur();
                 }
               }}
-              placeholder="搜索名称、邮箱、角色或 ID"
+              placeholder={t.accounts.searchPlaceholder}
             />
             {!query && <kbd>/</kbd>}
           </div>
@@ -217,23 +219,24 @@ export default function AccountsPage(props: Props) {
             value={filter}
             onChange={setFilter}
             options={[
-              { value: "all", label: "全部", count: list.length },
-              { value: "ok", label: "正常", count: counts.ok },
-              { value: "attention", label: "需处理", count: counts.attention },
-              ...(counts.vault > 0 ? [{ value: "vault" as const, label: "仅账号库", count: counts.vault }] : []),
+              { value: "all", label: t.accounts.filterAll, count: list.length },
+              { value: "ok", label: t.accounts.filterOk, count: counts.ok },
+              { value: "attention", label: t.accounts.filterAttention, count: counts.attention },
+              ...(counts.vault > 0 ? [{ value: "vault" as const, label: t.common.vaultOnly, count: counts.vault }] : []),
             ]}
           />
-          <select className="select" value={sort} onChange={(e) => setSort(e.target.value as Sort)} aria-label="排序">
-            <option value="default">当前优先</option>
-            <option value="quota">剩余额度</option>
-            <option value="recent">最近使用</option>
-            <option value="name">名称</option>
+          <select className="select" value={sort} onChange={(e) => setSort(e.target.value as Sort)} aria-label={t.accounts.sortLabel}>
+            {SORTS.map((s) => (
+              <option key={s} value={s}>
+                {t.accounts.sorts[s]}
+              </option>
+            ))}
           </select>
-          <div className="iconGroup" role="group" aria-label="视图">
-            <button className={cx("iconBtn", view === "list" && "on")} onClick={() => setView("list")} title="列表">
+          <div className="iconGroup" role="group" aria-label={t.accounts.viewLabel}>
+            <button className={cx("iconBtn", view === "list" && "on")} onClick={() => setView("list")} title={t.accounts.viewList}>
               <Icon name="list" />
             </button>
-            <button className={cx("iconBtn", view === "grid" && "on")} onClick={() => setView("grid")} title="网格">
+            <button className={cx("iconBtn", view === "grid" && "on")} onClick={() => setView("grid")} title={t.accounts.viewGrid}>
               <Icon name="grid" />
             </button>
           </div>
@@ -253,17 +256,17 @@ export default function AccountsPage(props: Props) {
       )}
 
       {accounts?.length === 0 && (
-        <Empty icon="users" title="还没有账号">
-          <p>从浏览器登录一个 Amazon Quick 账号，或者导入这台电脑上 Quick 已登录的账号。</p>
+        <Empty icon="users" title={t.common.noAccounts}>
+          <p>{t.accounts.emptyHint}</p>
           <button className="btn primary" onClick={props.onAdd}>
             <Icon name="plus" />
-            添加账号
+            {t.accounts.add}
           </button>
         </Empty>
       )}
 
       {list.length > 0 && filtered.length === 0 && (
-        <Empty icon="search" title="没有匹配的账号">
+        <Empty icon="search" title={t.accounts.noMatch}>
           <button
             className="btn ghost"
             onClick={() => {
@@ -271,7 +274,7 @@ export default function AccountsPage(props: Props) {
               setFilter("all");
             }}
           >
-            清除筛选
+            {t.accounts.clearFilters}
           </button>
         </Empty>
       )}
@@ -299,36 +302,36 @@ export default function AccountsPage(props: Props) {
 
       {pages > 1 && (
         <div className="pager">
-          <button className="iconBtn" onClick={() => setPage(pageIndex - 1)} disabled={pageIndex === 0} aria-label="上一页">
+          <button className="iconBtn" onClick={() => setPage(pageIndex - 1)} disabled={pageIndex === 0} aria-label={t.accounts.prevPage}>
             <Icon name="chevronLeft" />
           </button>
           <span>
             {pageIndex + 1} / {pages}
           </span>
-          <button className="iconBtn" onClick={() => setPage(pageIndex + 1)} disabled={pageIndex >= pages - 1} aria-label="下一页">
+          <button className="iconBtn" onClick={() => setPage(pageIndex + 1)} disabled={pageIndex >= pages - 1} aria-label={t.accounts.nextPage}>
             <Icon name="chevronRight" />
           </button>
         </div>
       )}
 
       {selecting && (
-        <div className="batchBar" role="toolbar" aria-label="批量操作">
+        <div className="batchBar" role="toolbar" aria-label={t.accounts.batchLabel}>
           <span>
-            已选 <b>{selected.size}</b> 个
+            {t.accounts.selectedPrefix} <b>{selected.size}</b> {t.accounts.selectedSuffix}
           </span>
           <button className="btn ghost sm" onClick={toggleAllFiltered}>
-            {allFilteredSelected ? "取消全选" : `全选（${filtered.length}）`}
+            {allFilteredSelected ? t.accounts.unselectAll : t.accounts.selectAllCount(filtered.length)}
           </button>
           <span className="sep" />
           <button className="btn sm" onClick={() => props.onReloadUsage([...selected])}>
             <Icon name="refresh" size={14} />
-            刷新额度
+            {t.accounts.refreshQuota}
           </button>
           <button className="btn danger sm" onClick={() => props.onDelete(selectedAccounts)}>
             <Icon name="trash" size={14} />
-            删除
+            {t.common.delete}
           </button>
-          <button className="iconBtn" onClick={() => setSelected(new Set())} title="取消选择">
+          <button className="iconBtn" onClick={() => setSelected(new Set())} title={t.accounts.clearSelection}>
             <Icon name="x" />
           </button>
         </div>
@@ -353,15 +356,16 @@ interface CardProps {
 
 function AccountCard(p: CardProps) {
   const { a } = p;
-  const s = accountStatus(a);
+  const t = useT();
+  const s = accountStatus(a, t);
   const name = who(a);
   const now = Date.now() / 1000;
   const expires = a.refresh_expires_at;
   return (
     <li className={cx("acct", a.active && "isActive", p.selected && "isSelected")}>
       <div className="acctHead">
-        <label className="acctCheck" title="选择">
-          <input type="checkbox" checked={p.selected} onChange={p.onToggle} aria-label={`选择 ${name}`} />
+        <label className="acctCheck" title={t.accounts.select}>
+          <input type="checkbox" checked={p.selected} onChange={p.onToggle} aria-label={t.accounts.selectName(name)} />
         </label>
         <Avatar name={name} hue={hue(a.id)} />
         <div className="acctWho">
@@ -369,16 +373,16 @@ function AccountCard(p: CardProps) {
             <span className="truncate" title={name}>
               {name}
             </span>
-            {a.active && <span className="tag accent">使用中</span>}
+            {a.active && <span className="tag accent">{t.common.inUse}</span>}
             {p.recommended && (
-              <span className="tag ok" title="可切换的账号里剩余额度最多">
+              <span className="tag ok" title={t.accounts.mostLeftTitle}>
                 <Icon name="star" size={11} />
-                剩余最多
+                {t.accounts.mostLeft}
               </span>
             )}
             {!a.on_desktop && (
-              <span className="tag" title="只在本工具的账号库里，第一次切换时写入 Quick">
-                仅账号库
+              <span className="tag" title={t.accounts.vaultOnlyTitle}>
+                {t.common.vaultOnly}
               </span>
             )}
           </div>
@@ -393,39 +397,39 @@ function AccountCard(p: CardProps) {
         <div className="acctMeta">
           {a.role && <span>{a.role}</span>}
           {expires > 0 && (
-            <span title={`登录有效至 ${fmtDate(expires)}`}>
+            <span title={t.accounts.validUntil(fmtDate(expires))}>
               <Icon name="shield" size={12} />
-              {expires < now ? "登录已过期" : `登录 ${fmtRelative(expires)}到期`}
+              {expires < now ? t.status.expired : t.accounts.expiresIn(fmtRelative(expires, t))}
             </span>
           )}
           {a.last_used_at && (
             <span title={fmtTime(a.last_used_at)}>
               <Icon name="clock" size={12} />
-              {fmtRelative(lastUsed(a))}使用
+              {t.accounts.usedAt(fmtRelative(lastUsed(a), t))}
             </span>
           )}
         </div>
         <div className="acctActions">
-          <button className="iconBtn" onClick={p.onDetails} title="详情">
+          <button className="iconBtn" onClick={p.onDetails} title={t.accounts.details}>
             <Icon name="info" />
           </button>
-          <button className="iconBtn dangerHover" onClick={p.onDelete} title="删除">
+          <button className="iconBtn dangerHover" onClick={p.onDelete} title={t.common.delete}>
             <Icon name="trash" />
           </button>
           {a.active ? (
             <span className="activeMark">
               <Icon name="check" size={14} />
-              当前账号
+              {t.common.currentAccount}
             </span>
           ) : (
             <button
               className="btn primary sm"
               onClick={p.onSwitch}
               disabled={!canSwitch(a)}
-              title={canSwitch(a) ? "把 Quick 切换到这个账号" : "这个账号没有可用的登录信息"}
+              title={canSwitch(a) ? t.accounts.switchTitle : t.accounts.noSignIn}
             >
               <Icon name="swap" size={14} />
-              切换
+              {t.common.switch}
             </button>
           )}
         </div>
@@ -443,7 +447,8 @@ interface QuotaProps {
 }
 
 function QuotaBlock({ a, usage, error, loading, onReload }: QuotaProps) {
-  if (!canQuota(a)) return <div className="quota muted">没有登录信息，读不到额度</div>;
+  const t = useT();
+  if (!canQuota(a)) return <div className="quota muted">{t.accounts.noQuotaInfo}</div>;
 
   if (!usage) {
     if (error && !loading) {
@@ -452,10 +457,10 @@ function QuotaBlock({ a, usage, error, loading, onReload }: QuotaProps) {
           <div className="quotaErr">
             <Icon name="alert" size={13} />
             <span className="truncate" title={error}>
-              额度读取失败：{error}
+              {t.accounts.quotaFailed(error)}
             </span>
             <button className="linkBtn" onClick={onReload}>
-              重试
+              {t.common.retry}
             </button>
           </div>
         </div>
@@ -471,17 +476,17 @@ function QuotaBlock({ a, usage, error, loading, onReload }: QuotaProps) {
   return (
     <div className={cx("quota", loading && "isLoading")}>
       <div className="quotaHead">
-        <span className="quotaPlan">{usage.plan || "额度"}</span>
+        <span className="quotaPlan">{usage.plan || t.accounts.quota}</span>
         <span className="quotaHint">
-          {usage.trial_ends_at ? `试用至 ${new Date(usage.trial_ends_at).toLocaleDateString()} · ` : ""}
-          {usage.windows.length > 0 && nextResetLabel()}
+          {usage.trial_ends_at ? t.accounts.trialUntil(new Date(usage.trial_ends_at).toLocaleDateString()) : ""}
+          {usage.windows.length > 0 && nextResetLabel(t)}
         </span>
-        <button className="iconBtn xs" onClick={onReload} disabled={loading} title="刷新额度">
+        <button className="iconBtn xs" onClick={onReload} disabled={loading} title={t.accounts.refreshQuota}>
           <Icon name="refresh" size={13} className={loading ? "spin" : ""} />
         </button>
       </div>
       {usage.windows.length === 0 ? (
-        <div className="muted">没有额度数据</div>
+        <div className="muted">{t.accounts.noQuotaData}</div>
       ) : (
         usage.windows.map((w) => {
           const ratio = w.limit_hours > 0 ? Math.max(0, Math.min(1, w.left_hours / w.limit_hours)) : 0;
@@ -489,11 +494,11 @@ function QuotaBlock({ a, usage, error, loading, onReload }: QuotaProps) {
           return (
             <div className="quotaRow" key={w.name}>
               <span className="quotaName">{w.name}</span>
-              <span className={`meter ${tone}`} title={`已用 ${fmtHours(w.used_hours)}`}>
+              <span className={`meter ${tone}`} title={t.accounts.used(fmtHours(w.used_hours))}>
                 <span style={{ width: `${Math.round(ratio * 100)}%` }} />
               </span>
               <span className="quotaNum">
-                剩 <b>{fmtHours(w.left_hours)}</b>
+                {t.accounts.leftPrefix} <b>{fmtHours(w.left_hours)}</b>
                 <i> / {fmtHours(w.limit_hours)}</i>
               </span>
             </div>

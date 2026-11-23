@@ -244,3 +244,4 @@ export const appInfo = () => invoke<AppInfo>("app_info");
 export const checkForUpdate = () => invoke<UpdateInfo>("check_for_update");
 export const autostartEnabled = () => invoke<boolean>("autostart_enabled");
 export const setAutostart = (enabled: boolean) => invoke<void>("set_autostart", { enabled });
+export const setTrayLanguage = (lang: "zh" | "en") => invoke<void>("set_tray_language", { lang });

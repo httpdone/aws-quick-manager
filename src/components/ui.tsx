@@ -1,4 +1,5 @@
 import { ReactNode, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useT } from "../i18n";
 import { copyText } from "../lib/clipboard";
 import { Tone } from "../lib/status";
 import Icon, { IconName } from "./Icon";
@@ -44,6 +45,7 @@ export function useUI(): UI {
 }
 
 export function UIProvider({ children }: { children: ReactNode }) {
+  const t = useT();
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [pending, setPending] = useState<(ConfirmOptions & { resolve: (ok: boolean) => void }) | null>(null);
   const seq = useRef(0);
@@ -76,24 +78,24 @@ export function UIProvider({ children }: { children: ReactNode }) {
     <UIContext.Provider value={value}>
       {children}
       <div className="toasts" role="status" aria-live="polite">
-        {toasts.map((t) => {
-          const action = t.action;
+        {toasts.map((item) => {
+          const action = item.action;
           return (
-            <div key={t.id} className={`toast ${t.tone}`}>
-              <Icon name={t.tone === "bad" ? "alert" : t.tone === "ok" ? "check" : "info"} />
-              <span className="toastText">{t.text}</span>
+            <div key={item.id} className={`toast ${item.tone}`}>
+              <Icon name={item.tone === "bad" ? "alert" : item.tone === "ok" ? "check" : "info"} />
+              <span className="toastText">{item.text}</span>
               {action && (
                 <button
                   className="btn sm"
                   onClick={() => {
                     action.run();
-                    dismiss(t.id);
+                    dismiss(item.id);
                   }}
                 >
                   {action.label}
                 </button>
               )}
-              <button className="iconBtn xs" onClick={() => dismiss(t.id)} aria-label="关闭">
+              <button className="iconBtn xs" onClick={() => dismiss(item.id)} aria-label={t.common.close}>
                 <Icon name="x" size={14} />
               </button>
             </div>
@@ -108,10 +110,10 @@ export function UIProvider({ children }: { children: ReactNode }) {
           footer={
             <>
               <button className="btn ghost" onClick={() => answer(false)}>
-                取消
+                {t.common.cancel}
               </button>
               <button className={`btn ${pending.danger ? "danger" : "primary"}`} onClick={() => answer(true)} autoFocus>
-                {pending.confirmLabel ?? "确定"}
+                {pending.confirmLabel ?? t.common.ok}
               </button>
             </>
           }
@@ -223,22 +225,23 @@ export function Alert({ tone, children, icon }: { tone: "bad" | "warn" | "info" 
 }
 
 export function CopyButton({ text, label }: { text: string; label?: string }) {
+  const t = useT();
   const [done, setDone] = useState(false);
   useEffect(() => {
     if (!done) return;
-    const t = window.setTimeout(() => setDone(false), 1500);
-    return () => window.clearTimeout(t);
+    const timer = window.setTimeout(() => setDone(false), 1500);
+    return () => window.clearTimeout(timer);
   }, [done]);
   return (
     <button
       type="button"
       className={cx(label ? "btn ghost sm" : "iconBtn xs", done && "copied")}
-      title={done ? "已复制" : "复制"}
+      title={done ? t.common.copied : t.common.copy}
       disabled={!text}
       onClick={async () => setDone(await copyText(text))}
     >
       <Icon name={done ? "check" : "copy"} size={13} />
-      {label && (done ? "已复制" : label)}
+      {label && (done ? t.common.copied : label)}
     </button>
   );
 }

@@ -1,4 +1,5 @@
 import { ReactNode, useEffect, useId, useRef } from "react";
+import { useT } from "../i18n";
 import Icon from "./Icon";
 
 interface Props {
@@ -17,6 +18,7 @@ const stack: number[] = [];
 let nextId = 0;
 
 export default function Modal({ title, subtitle, onClose, children, footer, size = "md", locked }: Props) {
+  const t = useT();
   const labelId = useId();
   const close = useRef(onClose);
   const lockedRef = useRef(locked);
@@ -53,7 +55,7 @@ export default function Modal({ title, subtitle, onClose, children, footer, size
             {subtitle && <p>{subtitle}</p>}
           </div>
           {!locked && (
-            <button className="iconBtn" onClick={onClose} aria-label="关闭">
+            <button className="iconBtn" onClick={onClose} aria-label={t.common.close}>
               <Icon name="x" />
             </button>
           )}

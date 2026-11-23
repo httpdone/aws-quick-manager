@@ -4,7 +4,7 @@ mod updates;
 use quick::{accounts, api, credstore, desktop, device_ids, manage, oauth, profiles, switcher, vault};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, Wry};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 #[tauri::command]
@@ -387,11 +387,35 @@ async fn check_for_update(app: tauri::AppHandle) -> Result<updates::UpdateInfo, 
     updates::check(&app.package_info().version).await
 }
 
+/// Tray menu items whose labels follow the UI language.
+struct TrayMenu {
+    open: MenuItem<Wry>,
+    refresh: MenuItem<Wry>,
+    quit: MenuItem<Wry>,
+}
+
+/// Labels for the tray's open / refresh / quit items; anything but `"en"` is Chinese.
+fn tray_labels(lang: &str) -> [&'static str; 3] {
+    match lang {
+        "en" => ["Open window", "Refresh accounts", "Quit"],
+        _ => ["打开主窗口", "刷新账号", "退出"],
+    }
+}
+
+#[tauri::command]
+fn set_tray_language(menu: tauri::State<'_, TrayMenu>, lang: String) -> Result<(), String> {
+    let [open, refresh, quit] = tray_labels(&lang);
+    menu.open.set_text(open).map_err(|e| e.to_string())?;
+    menu.refresh.set_text(refresh).map_err(|e| e.to_string())?;
+    menu.quit.set_text(quit).map_err(|e| e.to_string())
+}
+
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "打开主窗口", true, None::<&str>)?;
-    let refresh = MenuItem::with_id(app, "refresh", "刷新账号", true, None::<&str>)?;
+    let [open_label, refresh_label, quit_label] = tray_labels("zh");
+    let open = MenuItem::with_id(app, "open", open_label, true, None::<&str>)?;
+    let refresh = MenuItem::with_id(app, "refresh", refresh_label, true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", quit_label, true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &refresh, &sep, &quit])?;
     let mut builder = TrayIconBuilder::with_id("main")
         .menu(&menu)
@@ -417,6 +441,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         builder = builder.icon(icon.clone());
     }
     builder.build(app)?;
+    app.manage(TrayMenu { open, refresh, quit });
     Ok(())
 }
 
@@ -475,8 +500,21 @@ pub fn run() {
             app_info,
             check_for_update,
             autostart_enabled,
-            set_autostart
+            set_autostart,
+            set_tray_language
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tray_labels;
+
+    #[test]
+    fn tray_labels_follow_language() {
+        assert_eq!(tray_labels("en"), ["Open window", "Refresh accounts", "Quit"]);
+        assert_eq!(tray_labels("zh"), ["打开主窗口", "刷新账号", "退出"]);
+        assert_eq!(tray_labels("fr"), tray_labels("zh"));
+    }
 }
