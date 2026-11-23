@@ -1,3 +1,6 @@
+import type { Messages } from "../i18n";
+import type { TimeUnit } from "../i18n/zh";
+
 export const fmtDate = (secs: number) => (secs ? new Date(secs * 1000).toLocaleString() : "—");
 
 export const fmtTime = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "—");
@@ -7,25 +10,25 @@ export const fmtHours = (h: number) => `${Math.round(h * 10) / 10} h`;
 /** Unix seconds of an ISO timestamp, 0 when missing. */
 export const isoSecs = (iso: string | null) => (iso ? Math.floor(new Date(iso).getTime() / 1000) : 0);
 
-/** "3 分钟前" / "2 天后" for unix seconds. */
-export function fmtRelative(secs: number): string {
+/** Relative time ("3 minutes ago", "in 2 days") for unix seconds. */
+export function fmtRelative(secs: number, t: Messages): string {
   if (!secs) return "—";
   const diff = secs - Date.now() / 1000;
   const abs = Math.abs(diff);
-  const units: [number, string][] = [
-    [86400 * 365, "年"],
-    [86400 * 30, "个月"],
-    [86400, "天"],
-    [3600, "小时"],
-    [60, "分钟"],
+  const units: [number, TimeUnit][] = [
+    [86400 * 365, "year"],
+    [86400 * 30, "month"],
+    [86400, "day"],
+    [3600, "hour"],
+    [60, "minute"],
   ];
-  for (const [size, name] of units) {
+  for (const [size, unit] of units) {
     if (abs >= size) {
       const n = Math.floor(abs / size);
-      return diff < 0 ? `${n} ${name}前` : `${n} ${name}后`;
+      return diff < 0 ? t.time.ago(n, unit) : t.time.later(n, unit);
     }
   }
-  return diff < 0 ? "刚刚" : "马上";
+  return diff < 0 ? t.time.justNow : t.time.soon;
 }
 
 /** First character of a name, for avatars. */
@@ -42,7 +45,7 @@ export function hue(seed: string): number {
 }
 
 /** Quota resets on the 1st of next month (the desktop's rule). */
-export function nextResetLabel(): string {
+export function nextResetLabel(t: Messages): string {
   const month = (new Date().getMonth() + 1) % 12;
-  return `${month + 1} 月 1 日重置`;
+  return t.time.resetsOn(month + 1);
 }

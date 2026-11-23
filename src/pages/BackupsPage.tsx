@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { BackupInfo, backupNow, deleteBackup, listBackups, restoreBackup } from "../lib/api";
+import { useT } from "../i18n";
 import { fmtDate, fmtRelative } from "../lib/format";
 import Icon from "../components/Icon";
 import { Alert, Empty, Spinner, cx, useUI } from "../components/ui";
@@ -10,6 +11,7 @@ interface Props {
 }
 
 export default function BackupsPage({ desktopRunning, onRestored }: Props) {
+  const t = useT();
   const { toast, confirm } = useUI();
   const [backups, setBackups] = useState<BackupInfo[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -42,29 +44,29 @@ export default function BackupsPage({ desktopRunning, onRestored }: Props) {
   const doBackup = () =>
     act("new", async () => {
       await backupNow();
-      return "已备份当前账号清单";
+      return t.backups.backedUp;
     });
 
   const doRestore = async (b: BackupInfo) => {
     const ok = await confirm({
-      title: "恢复这份清单？",
-      message: `${fmtDate(b.modified)} 的备份，${b.accounts} 个账号，当前账号：${b.active || "无"}。\n\n会覆盖 Quick 现在的 profiles.json，下次打开 Quick 生效。各账号的登录凭据不受影响。`,
-      confirmLabel: "恢复",
+      title: t.backups.restoreTitle,
+      message: t.backups.restoreMessage(fmtDate(b.modified), b.accounts, b.active || t.common.none),
+      confirmLabel: t.common.restore,
     });
     if (!ok) return;
     await act(b.name, async () => {
       await restoreBackup(b.name);
       onRestored();
-      return "已恢复清单，下次打开 Quick 生效";
+      return t.backups.restored;
     });
   };
 
   const doDelete = async (b: BackupInfo) => {
-    const ok = await confirm({ title: "删除这份备份？", message: `${fmtDate(b.modified)} 的备份，删除后不能恢复。`, confirmLabel: "删除", danger: true });
+    const ok = await confirm({ title: t.backups.deleteTitle, message: t.backups.deleteMessage(fmtDate(b.modified)), confirmLabel: t.common.delete, danger: true });
     if (!ok) return;
     await act(b.name, async () => {
       await deleteBackup(b.name);
-      return "已删除备份";
+      return t.backups.deleted;
     });
   };
 
@@ -72,27 +74,27 @@ export default function BackupsPage({ desktopRunning, onRestored }: Props) {
     <div className="page">
       <header className="pageHead">
         <div>
-          <h1>清单备份</h1>
-          <p className="pageSub">每次切换前自动保存 Quick 的账号清单，最多保留 30 份</p>
+          <h1>{t.backups.title}</h1>
+          <p className="pageSub">{t.backups.sub}</p>
         </div>
         <div className="actions">
           <button className="btn ghost" onClick={load} disabled={!!busy}>
             <Icon name="refresh" />
-            刷新
+            {t.common.refresh}
           </button>
           <button className="btn primary" onClick={doBackup} disabled={!!busy}>
             {busy === "new" ? <Spinner /> : <Icon name="save" />}
-            立即备份
+            {t.backups.backupNow}
           </button>
         </div>
       </header>
 
-      {desktopRunning && <Alert tone="info">Quick 正在运行，退出后才能恢复清单；删除备份不受影响。</Alert>}
+      {desktopRunning && <Alert tone="info">{t.backups.desktopRunning}</Alert>}
 
       {backups === null && <div className="skeleton tall" />}
       {backups?.length === 0 && (
-        <Empty icon="archive" title="还没有备份">
-          <p>切换、添加或删除账号时会自动备份，也可以现在手动备份一份。</p>
+        <Empty icon="archive" title={t.backups.empty}>
+          <p>{t.backups.emptyHint}</p>
         </Empty>
       )}
 
@@ -106,8 +108,8 @@ export default function BackupsPage({ desktopRunning, onRestored }: Props) {
                   <div>
                     <b>{fmtDate(b.modified)}</b>
                     <span className="muted">
-                      {fmtRelative(b.modified)}
-                      {i === 0 && " · 最新"}
+                      {fmtRelative(b.modified, t)}
+                      {i === 0 && t.backups.latest}
                     </span>
                   </div>
                   <div className="tlActions">
@@ -115,12 +117,12 @@ export default function BackupsPage({ desktopRunning, onRestored }: Props) {
                       className="btn sm"
                       onClick={() => doRestore(b)}
                       disabled={!!busy || desktopRunning || !!b.parse_error}
-                      title={desktopRunning ? "先退出 Quick" : undefined}
+                      title={desktopRunning ? t.backups.quitFirst : undefined}
                     >
                       {busy === b.name ? <Spinner /> : <Icon name="history" size={14} />}
-                      恢复
+                      {t.common.restore}
                     </button>
-                    <button className="iconBtn dangerHover" onClick={() => doDelete(b)} disabled={!!busy} title="删除">
+                    <button className="iconBtn dangerHover" onClick={() => doDelete(b)} disabled={!!busy} title={t.common.delete}>
                       <Icon name="trash" />
                     </button>
                   </div>
@@ -130,7 +132,7 @@ export default function BackupsPage({ desktopRunning, onRestored }: Props) {
                 ) : (
                   <>
                     <div className="tlChips">
-                      {b.entries.length === 0 && <span className="muted">空清单</span>}
+                      {b.entries.length === 0 && <span className="muted">{t.backups.emptyList}</span>}
                       {b.entries.map((e) => (
                         <span key={e.id} className={cx("tag", e.active && "accent")} title={e.id}>
                           {e.active && <Icon name="check" size={11} />}
@@ -139,10 +141,10 @@ export default function BackupsPage({ desktopRunning, onRestored }: Props) {
                       ))}
                     </div>
                     {(b.added.length > 0 || b.removed.length > 0 || b.active_changed) && (
-                      <div className="tlDiff" title="和现在的清单相比">
-                        {b.active_changed && <span>恢复后当前账号变为 {b.active || "无"}</span>}
-                        {b.added.length > 0 && <span className="plus">多 {b.added.length} 个：{b.added.join("、")}</span>}
-                        {b.removed.length > 0 && <span className="minus">少 {b.removed.length} 个：{b.removed.join("、")}</span>}
+                      <div className="tlDiff" title={t.backups.diffTitle}>
+                        {b.active_changed && <span>{t.backups.activeChanges(b.active || t.common.none)}</span>}
+                        {b.added.length > 0 && <span className="plus">{t.backups.more(b.added.length, b.added.join(t.common.listSep))}</span>}
+                        {b.removed.length > 0 && <span className="minus">{t.backups.fewer(b.removed.length, b.removed.join(t.common.listSep))}</span>}
                       </div>
                     )}
                   </>

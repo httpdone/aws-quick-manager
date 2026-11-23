@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Account, deleteAccount } from "../lib/api";
+import { useT } from "../i18n";
 import { hue } from "../lib/format";
 import { who } from "../lib/status";
 import Icon from "./Icon";
@@ -14,6 +15,7 @@ interface Props {
 }
 
 export default function DeleteAccountsDialog({ accounts, desktopRunning, onClose, onDone }: Props) {
+  const t = useT();
   const hasDesktop = accounts.some((a) => a.on_desktop);
   const hasActive = accounts.some((a) => a.active);
   const [removeDesktop, setRemoveDesktop] = useState(hasDesktop);
@@ -37,25 +39,25 @@ export default function DeleteAccountsDialog({ accounts, desktopRunning, onClose
       }
     }
     setBusy(false);
-    if (failures.length === 0) onDone(single ? `已删除 ${who(accounts[0])}` : `已删除 ${done} 个账号`);
-    else setError(`已删除 ${done} 个，失败 ${failures.length} 个：${failures.join("；")}`);
+    if (failures.length === 0) onDone(single ? t.remove.deleted(who(accounts[0])) : t.remove.deletedCount(done));
+    else setError(t.remove.partial(done, failures.length, failures.join(t.common.joinSep)));
   };
 
   const shown = accounts.slice(0, 6);
 
   return (
     <Modal
-      title={single ? "删除账号" : `删除 ${accounts.length} 个账号`}
+      title={single ? t.remove.titleOne : t.remove.titleMany(accounts.length)}
       onClose={onClose}
       locked={busy}
       footer={
         <>
           <button className="btn ghost" onClick={onClose} disabled={busy}>
-            取消
+            {t.common.cancel}
           </button>
           <button className="btn danger" onClick={run} disabled={busy || blocked}>
             {busy ? <Spinner /> : <Icon name="trash" size={14} />}
-            {busy ? "删除中…" : removeData && removeDesktop ? "永久删除" : "删除"}
+            {busy ? t.remove.deleting : removeData && removeDesktop ? t.remove.permanent : t.common.delete}
           </button>
         </>
       }
@@ -65,25 +67,25 @@ export default function DeleteAccountsDialog({ accounts, desktopRunning, onClose
           <li key={a.id} className="chip">
             <Avatar name={who(a)} hue={hue(a.id)} size={22} />
             <span className="truncate">{who(a)}</span>
-            {a.active && <span className="tag accent">使用中</span>}
+            {a.active && <span className="tag accent">{t.common.inUse}</span>}
           </li>
         ))}
-        {accounts.length > shown.length && <li className="chip muted">等 {accounts.length} 个</li>}
+        {accounts.length > shown.length && <li className="chip muted">{t.remove.more(accounts.length)}</li>}
       </ul>
 
       <div className="checkCards">
         <label className="checkCard on locked">
           <input type="checkbox" checked disabled />
           <span>
-            <b>从账号库移除</b>
-            <small>删掉本工具保存的登录副本</small>
+            <b>{t.remove.fromVault}</b>
+            <small>{t.remove.fromVaultDesc}</small>
           </span>
         </label>
         <label className={cx("checkCard", removeDesktop && "on", !hasDesktop && "disabled")}>
           <input type="checkbox" checked={removeDesktop} disabled={!hasDesktop || busy} onChange={(e) => setRemoveDesktop(e.target.checked)} />
           <span>
-            <b>同时从 Quick 里删除</b>
-            <small>{hasDesktop ? "删掉 Quick 清单里的条目和系统凭据" : "选中的账号都不在 Quick 里"}</small>
+            <b>{t.remove.fromDesktop}</b>
+            <small>{hasDesktop ? t.remove.fromDesktopDesc : t.remove.notOnDesktop}</small>
           </span>
         </label>
         <label className={cx("checkCard", "danger", removeData && removeDesktop && "on", (!removeDesktop || !hasDesktop) && "disabled")}>
@@ -94,14 +96,14 @@ export default function DeleteAccountsDialog({ accounts, desktopRunning, onClose
             onChange={(e) => setRemoveData(e.target.checked)}
           />
           <span>
-            <b>同时删除本地数据目录</b>
-            <small>本地会话、知识库都会删掉，无法恢复</small>
+            <b>{t.remove.dataDir}</b>
+            <small>{t.remove.dataDirDesc}</small>
           </span>
         </label>
       </div>
 
-      {hasActive && removeDesktop && <Alert tone="warn">包含当前账号。删除后 Quick 下次启动会用剩下的第一个账号。</Alert>}
-      {blocked && <Alert tone="bad">Quick 正在运行，先退出 Quick，或者只从账号库移除。</Alert>}
+      {hasActive && removeDesktop && <Alert tone="warn">{t.remove.includesActive}</Alert>}
+      {blocked && <Alert tone="bad">{t.remove.desktopRunning}</Alert>}
       {error && <Alert tone="bad">{error}</Alert>}
     </Modal>
   );

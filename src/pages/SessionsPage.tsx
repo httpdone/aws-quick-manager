@@ -10,6 +10,7 @@ import {
   listCloudSessions,
   listSessions,
 } from "../lib/api";
+import { useT } from "../i18n";
 import { fmtRelative, fmtDate } from "../lib/format";
 import { who } from "../lib/status";
 import Icon from "../components/Icon";
@@ -33,6 +34,7 @@ interface Row {
 }
 
 export default function SessionsPage({ accounts }: Props) {
+  const t = useT();
   const { toast, confirm } = useUI();
   const [accountId, setAccountId] = useState("");
   const [targetId, setTargetId] = useState("");
@@ -117,12 +119,12 @@ export default function SessionsPage({ accounts }: Props) {
       const result =
         source === "cloud" ? await exportCloudSessions(account.id, ids, format) : await exportSessions(account.id, ids, format);
       const count = "events" in result ? result.events : result.messages;
-      toast(`已导出 ${result.sessions} 个会话，${count} 条${source === "cloud" ? "消息" : "事件"}`, "ok", {
-        label: "在文件夹中显示",
+      toast(t.sessions.exported(result.sessions, count, source === "cloud"), "ok", {
+        label: t.common.revealInFolder,
         run: () => revealItemInDir(result.path).catch((e) => toast(String(e), "bad")),
       });
     } catch (e) {
-      toast(`导出失败：${String(e)}`, "bad");
+      toast(t.sessions.exportFailed(String(e)), "bad");
     } finally {
       setBusy(false);
     }
@@ -132,18 +134,18 @@ export default function SessionsPage({ accounts }: Props) {
     const target = accounts.find((a) => a.id === targetId);
     if (!account || !target || selected.size === 0) return;
     const ok = await confirm({
-      title: `复制 ${selected.size} 个会话到 ${who(target)}`,
-      message: "会在目标账号新建会话，原会话不变。\n附件、工作区文件和工具产物不会跟着复制。",
-      confirmLabel: "复制",
+      title: t.sessions.copyTitle(selected.size, who(target)),
+      message: t.sessions.copyMessage,
+      confirmLabel: t.common.copy,
     });
     if (!ok) return;
     setBusy(true);
     try {
       const result = await importCloudSessions(account.id, target.id, [...selected]);
-      toast(`已复制 ${result.length} 个会话到 ${who(target)}`);
+      toast(t.sessions.copied(result.length, who(target)));
       setSelected(new Set());
     } catch (e) {
-      toast(`复制失败：${String(e)}`, "bad");
+      toast(t.sessions.copyFailed(String(e)), "bad");
     } finally {
       setBusy(false);
     }
@@ -154,10 +156,10 @@ export default function SessionsPage({ accounts }: Props) {
       <div className="page">
         <header className="pageHead">
           <div>
-            <h1>会话</h1>
+            <h1>{t.sessions.title}</h1>
           </div>
         </header>
-        <Empty icon="chat" title="还没有账号" />
+        <Empty icon="chat" title={t.common.noAccounts} />
       </div>
     );
   }
@@ -166,21 +168,21 @@ export default function SessionsPage({ accounts }: Props) {
     <div className="page">
       <header className="pageHead">
         <div>
-          <h1>会话</h1>
-          <p className="pageSub">查看、导出账号的会话，或复制到另一个账号</p>
+          <h1>{t.sessions.title}</h1>
+          <p className="pageSub">{t.sessions.sub}</p>
         </div>
         <button className="btn ghost" onClick={load} disabled={loading || busy}>
           <Icon name="refresh" className={loading ? "spin" : ""} />
-          刷新
+          {t.common.refresh}
         </button>
       </header>
 
       <div className="toolbar">
-        <select className="select wide" value={accountId} onChange={(e) => setAccountId(e.target.value)} disabled={busy} aria-label="账号">
+        <select className="select wide" value={accountId} onChange={(e) => setAccountId(e.target.value)} disabled={busy} aria-label={t.sessions.account}>
           {accounts.map((a) => (
             <option key={a.id} value={a.id}>
               {who(a)}
-              {a.active ? "（当前）" : ""}
+              {a.active ? t.sessions.currentSuffix : ""}
             </option>
           ))}
         </select>
@@ -189,27 +191,27 @@ export default function SessionsPage({ accounts }: Props) {
           onChange={setSource}
           disabled={busy}
           options={[
-            { value: "cloud", label: "云端", title: "服务器上保存的会话" },
-            { value: "local", label: "本地", title: "这台电脑上 Quick 的会话库" },
+            { value: "cloud", label: t.sessions.cloud, title: t.sessions.cloudTitle },
+            { value: "local", label: t.sessions.local, title: t.sessions.localTitle },
           ]}
         />
         <div className="search">
           <Icon name="search" size={15} />
-          <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索标题或 ID" />
+          <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t.sessions.searchPlaceholder} />
         </div>
       </div>
 
       {error && <Alert tone="bad">{error}</Alert>}
 
       {account && !account.on_desktop && source === "local" && (
-        <Alert tone="info">这个账号还没写进 Quick，没有本地会话库。切换一次后再来看。</Alert>
+        <Alert tone="info">{t.sessions.notOnDesktop}</Alert>
       )}
 
       {sessions && sessions.length > 0 && (
         <div className="actionBar">
           <label className="checkLabel">
             <input type="checkbox" checked={allSelected} onChange={toggleAll} />
-            {selected.size > 0 ? `已选 ${selected.size} 个` : `共 ${visible.length} 个`}
+            {selected.size > 0 ? t.sessions.selected(selected.size) : t.sessions.total(visible.length)}
           </label>
           <span className="spacer" />
           <Segmented<"md" | "json">
@@ -223,16 +225,16 @@ export default function SessionsPage({ accounts }: Props) {
           />
           <button className="btn sm" onClick={() => runExport([...selected])} disabled={busy || selected.size === 0}>
             <Icon name="download" size={14} />
-            导出选中
+            {t.sessions.exportSelected}
           </button>
           <button className="btn ghost sm" onClick={() => runExport([])} disabled={busy}>
-            导出全部
+            {t.sessions.exportAll}
           </button>
           {source === "cloud" && targets.length > 0 && (
             <>
               <span className="sep" />
-              <span className="muted">复制到</span>
-              <select className="select sm" value={targetId} onChange={(e) => setTargetId(e.target.value)} disabled={busy} aria-label="目标账号">
+              <span className="muted">{t.sessions.copyTo}</span>
+              <select className="select sm" value={targetId} onChange={(e) => setTargetId(e.target.value)} disabled={busy} aria-label={t.sessions.targetAccount}>
                 {targets.map((a) => (
                   <option key={a.id} value={a.id}>
                     {who(a)}
@@ -241,7 +243,7 @@ export default function SessionsPage({ accounts }: Props) {
               </select>
               <button className="btn primary sm" onClick={runImport} disabled={busy || selected.size === 0 || !targetId}>
                 {busy ? <Spinner /> : <Icon name="copy" size={14} />}
-                复制
+                {t.common.copy}
               </button>
             </>
           )}
@@ -259,10 +261,10 @@ export default function SessionsPage({ accounts }: Props) {
       )}
 
       {!loading && sessions?.length === 0 && !error && (
-        <Empty icon="chat" title={source === "cloud" ? "云端没有会话" : "本地会话库里没有会话"} />
+        <Empty icon="chat" title={source === "cloud" ? t.sessions.emptyCloud : t.sessions.emptyLocal} />
       )}
 
-      {sessions && sessions.length > 0 && visible.length === 0 && <Empty icon="search" title="没有匹配的会话" />}
+      {sessions && sessions.length > 0 && visible.length === 0 && <Empty icon="search" title={t.sessions.noMatch} />}
 
       {visible.length > 0 && (
         <ul className={cx("rows", loading && "isLoading")}>
@@ -273,19 +275,19 @@ export default function SessionsPage({ accounts }: Props) {
                 checked={selected.has(s.id)}
                 onChange={() => toggle(s.id)}
                 onClick={(e) => e.stopPropagation()}
-                aria-label={`选择 ${s.title}`}
+                aria-label={t.sessions.selectTitle(s.title)}
               />
               <div className="rowMain">
                 <div className="rowTitle">
-                  <span className="truncate">{s.title || "（无标题）"}</span>
-                  {s.archived && <span className="tag">已归档</span>}
-                  {!s.cloud && (s.server_session_id ? <span className="tag ok">已同步云端</span> : <span className="tag warn">仅本地</span>)}
+                  <span className="truncate">{s.title || t.sessions.untitled}</span>
+                  {s.archived && <span className="tag">{t.sessions.archived}</span>}
+                  {!s.cloud && (s.server_session_id ? <span className="tag ok">{t.sessions.synced}</span> : <span className="tag warn">{t.sessions.localOnly}</span>)}
                 </div>
                 <div className="rowSub mono truncate">{s.id}</div>
               </div>
               <div className="rowMeta">
-                <span>{s.message_count} 条消息</span>
-                <span title={fmtDate(s.updated_at)}>{fmtRelative(s.updated_at)}更新</span>
+                <span>{t.sessions.messages(s.message_count)}</span>
+                <span title={fmtDate(s.updated_at)}>{t.sessions.updated(fmtRelative(s.updated_at, t))}</span>
               </div>
             </li>
           ))}

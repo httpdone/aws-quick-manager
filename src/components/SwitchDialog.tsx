@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Account, DesktopStatus, SwitchReport, forceQuitDesktop, switchAccount } from "../lib/api";
+import { useT } from "../i18n";
 import { hue } from "../lib/format";
 import { getLaunchAfterSwitch, setLaunchAfterSwitch } from "../lib/prefs";
 import { who } from "../lib/status";
@@ -18,6 +19,7 @@ interface Props {
 type Phase = "confirm" | "running" | "needForce" | "error";
 
 export default function SwitchDialog({ target, current, desktop, onClose, onDone }: Props) {
+  const t = useT();
   const [phase, setPhase] = useState<Phase>("confirm");
   const [stage, setStage] = useState("");
   const [message, setMessage] = useState("");
@@ -34,10 +36,10 @@ export default function SwitchDialog({ target, current, desktop, onClose, onDone
     setMessage("");
     try {
       if (force) {
-        setStage("正在强制结束 Quick…");
+        setStage(t.switcher.forceQuitting);
         await forceQuitDesktop();
       }
-      setStage(running && !force ? "正在刷新令牌并退出 Quick…" : "正在刷新令牌并写入账号…");
+      setStage(running && !force ? t.switcher.refreshingAndQuitting : t.switcher.refreshingAndWriting);
       const report = await switchAccount(target.id, launch);
       onDone(report, target);
     } catch (e) {
@@ -49,70 +51,70 @@ export default function SwitchDialog({ target, current, desktop, onClose, onDone
 
   const busy = phase === "running";
   const steps = [
-    { icon: "refresh" as const, text: "刷新目标账号的登录令牌，失败就不切换" },
+    { icon: "refresh" as const, text: t.switcher.stepRefresh },
     {
       icon: "power" as const,
-      text: running ? "退出 Quick，正在进行的任务会中断" : "Quick 没在运行，跳过退出",
+      text: running ? t.switcher.stepQuit : t.switcher.stepSkipQuit,
     },
-    { icon: "save" as const, text: target.on_desktop ? "备份账号清单，写入凭据和设备 ID" : "备份账号清单，把账号写进 Quick 并生成数据目录" },
-    { icon: "zap" as const, text: launch ? "用新账号启动 Quick" : "不启动 Quick，下次打开时生效" },
+    { icon: "save" as const, text: target.on_desktop ? t.switcher.stepWriteCreds : t.switcher.stepWriteNew },
+    { icon: "zap" as const, text: launch ? t.switcher.stepLaunch : t.switcher.stepNoLaunch },
   ];
 
   const footer =
     phase === "confirm" ? (
       <>
         <button className="btn ghost" onClick={onClose}>
-          取消
+          {t.common.cancel}
         </button>
         <button className="btn primary" onClick={() => run(false)} autoFocus>
           <Icon name="swap" size={14} />
-          切换
+          {t.common.switch}
         </button>
       </>
     ) : phase === "running" ? (
       <button className="btn primary" disabled>
         <Spinner />
-        切换中…
+        {t.switcher.switching}
       </button>
     ) : phase === "needForce" ? (
       <>
         <button className="btn ghost" onClick={onClose}>
-          取消
+          {t.common.cancel}
         </button>
         <button className="btn" onClick={() => run(false)}>
-          重试
+          {t.common.retry}
         </button>
         <button className="btn danger" onClick={() => run(true)}>
           <Icon name="power" size={14} />
-          强制结束并继续
+          {t.switcher.forceContinue}
         </button>
       </>
     ) : (
       <>
         <button className="btn ghost" onClick={onClose}>
-          关闭
+          {t.common.close}
         </button>
         <button className="btn primary" onClick={() => run(false)}>
-          重试
+          {t.common.retry}
         </button>
       </>
     );
 
   return (
-    <Modal title="切换账号" onClose={onClose} footer={footer} locked={busy}>
+    <Modal title={t.switcher.title} onClose={onClose} footer={footer} locked={busy}>
       <div className="switchPair">
         <div className="switchSide">
           {current ? (
             <>
               <Avatar name={who(current)} hue={hue(current.id)} size={40} />
               <b className="truncate">{who(current)}</b>
-              <small className="truncate">{current.email || "当前账号"}</small>
+              <small className="truncate">{current.email || t.common.currentAccount}</small>
             </>
           ) : (
             <>
               <span className="avatar placeholder" style={{ width: 40, height: 40 }} />
-              <b>无</b>
-              <small>Quick 里没有当前账号</small>
+              <b>{t.common.none}</b>
+              <small>{t.switcher.noCurrent}</small>
             </>
           )}
         </div>
@@ -144,14 +146,14 @@ export default function SwitchDialog({ target, current, desktop, onClose, onDone
 
       {phase === "needForce" && (
         <Alert tone="warn">
-          <b>Quick 没有按请求退出。</b>
+          <b>{t.switcher.didNotQuit}</b>
           <p>{message}</p>
-          <p className="muted">强制结束会直接终止 Quick 和它的后台，正在写的数据可能丢失。也可以先从托盘手动退出 Quick，再点重试。</p>
+          <p className="muted">{t.switcher.forceHint}</p>
         </Alert>
       )}
       {phase === "error" && (
         <Alert tone="bad">
-          <b>切换没有完成。</b>
+          <b>{t.switcher.failed}</b>
           <p>{message}</p>
         </Alert>
       )}
@@ -159,10 +161,10 @@ export default function SwitchDialog({ target, current, desktop, onClose, onDone
       {(phase === "confirm" || phase === "error") && (
         <div className="optionRow">
           <div>
-            <b>切换后启动 Quick</b>
-            <small>{desktop && !desktop.installed ? "没找到 Quick 安装位置，需要手动打开" : "可在设置里修改默认值"}</small>
+            <b>{t.switcher.launchAfter}</b>
+            <small>{desktop && !desktop.installed ? t.switcher.noInstall : t.switcher.defaultInSettings}</small>
           </div>
-          <Toggle checked={launch} onChange={changeLaunch} label="切换后启动 Quick" />
+          <Toggle checked={launch} onChange={changeLaunch} label={t.switcher.launchAfter} />
         </div>
       )}
     </Modal>

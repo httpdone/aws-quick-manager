@@ -2,6 +2,7 @@ import { ReactNode, useEffect, useState } from "react";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { AppInfo, DesktopStatus, UpdateInfo, autostartEnabled, checkForUpdate, setAutostart } from "../lib/api";
 import { Theme, getLaunchAfterSwitch, getTheme, setLaunchAfterSwitch, setTheme } from "../lib/prefs";
+import { LangPref, Messages, useI18n, useT } from "../i18n";
 import Icon from "../components/Icon";
 import { CopyButton, Segmented, Toggle, useUI } from "../components/ui";
 
@@ -11,16 +12,19 @@ interface Props {
   onRefreshDesktop: () => void;
 }
 
-const SHORTCUTS: [string, string][] = [
-  ["Ctrl + R / F5", "从 Quick 同步并刷新"],
-  ["Ctrl + N", "添加账号"],
-  ["Ctrl + 1 … 5", "切换页面"],
-  ["/", "搜索账号"],
-  ["Esc", "关闭对话框 / 清空搜索"],
+type Shortcut = keyof Messages["settings"]["shortcutList"];
+
+const SHORTCUTS: [string, Shortcut][] = [
+  ["Ctrl + R / F5", "refresh"],
+  ["Ctrl + N", "add"],
+  ["Ctrl + 1 … 5", "pages"],
+  ["/", "search"],
+  ["Esc", "escape"],
 ];
 
 export default function SettingsPage({ info, desktop, onRefreshDesktop }: Props) {
   const { toast } = useUI();
+  const { t, pref: lang, setPref: setLang } = useI18n();
   const [theme, setThemeState] = useState<Theme>(getTheme);
   const [launch, setLaunch] = useState(getLaunchAfterSwitch);
   const [autostart, setAutostartState] = useState<boolean | null>(null);
@@ -32,9 +36,9 @@ export default function SettingsPage({ info, desktop, onRefreshDesktop }: Props)
       .catch(() => setAutostartState(null));
   }, []);
 
-  const changeTheme = (t: Theme) => {
-    setThemeState(t);
-    setTheme(t);
+  const changeTheme = (next: Theme) => {
+    setThemeState(next);
+    setTheme(next);
   };
 
   const changeLaunch = (on: boolean) => {
@@ -47,7 +51,7 @@ export default function SettingsPage({ info, desktop, onRefreshDesktop }: Props)
     try {
       await setAutostart(on);
       setAutostartState(on);
-      toast(on ? "已开启开机自启" : "已关闭开机自启");
+      toast(on ? t.settings.autostartOn : t.settings.autostartOff);
     } catch (e) {
       toast(String(e), "bad");
     } finally {
@@ -61,61 +65,72 @@ export default function SettingsPage({ info, desktop, onRefreshDesktop }: Props)
     <div className="page narrow">
       <header className="pageHead">
         <div>
-          <h1>设置</h1>
+          <h1>{t.settings.title}</h1>
         </div>
       </header>
 
       <section className="panel">
-        <h2>常规</h2>
-        <SettingRow title="外观" desc="跟随系统，或固定为浅色 / 深色">
+        <h2>{t.settings.general}</h2>
+        <SettingRow title={t.settings.appearance} desc={t.settings.appearanceDesc}>
           <Segmented<Theme>
             value={theme}
             onChange={changeTheme}
             options={[
-              { value: "system", label: <Icon name="monitor" size={14} />, title: "跟随系统" },
-              { value: "light", label: <Icon name="sun" size={14} />, title: "浅色" },
-              { value: "dark", label: <Icon name="moon" size={14} />, title: "深色" },
+              { value: "system", label: <Icon name="monitor" size={14} />, title: t.settings.system },
+              { value: "light", label: <Icon name="sun" size={14} />, title: t.settings.light },
+              { value: "dark", label: <Icon name="moon" size={14} />, title: t.settings.dark },
             ]}
           />
         </SettingRow>
-        <SettingRow title="切换后启动 Quick" desc="切换完成后自动用新账号打开 Quick">
-          <Toggle checked={launch} onChange={changeLaunch} label="切换后启动 Quick" />
+        <SettingRow title={t.settings.language} desc={t.settings.languageDesc}>
+          <Segmented<LangPref>
+            value={lang}
+            onChange={setLang}
+            options={[
+              { value: "system", label: <Icon name="monitor" size={14} />, title: t.settings.system },
+              { value: "zh", label: "中文", title: "中文" },
+              { value: "en", label: "EN", title: "English" },
+            ]}
+          />
         </SettingRow>
-        <SettingRow title="开机自启" desc={autostart === null ? "读取状态失败" : "登录系统后在托盘里启动"}>
-          <Toggle checked={autostart === true} onChange={changeAutostart} disabled={autostart === null || saving} label="开机自启" />
+        <SettingRow title={t.settings.launchAfter} desc={t.settings.launchAfterDesc}>
+          <Toggle checked={launch} onChange={changeLaunch} label={t.settings.launchAfter} />
+        </SettingRow>
+        <SettingRow title={t.settings.autostart} desc={autostart === null ? t.settings.autostartUnknown : t.settings.autostartDesc}>
+          <Toggle checked={autostart === true} onChange={changeAutostart} disabled={autostart === null || saving} label={t.settings.autostart} />
         </SettingRow>
       </section>
 
       <section className="panel">
         <div className="panelHead">
-          <h2>Quick 桌面端</h2>
+          <h2>{t.desktop.label}</h2>
           <button className="btn ghost sm" onClick={onRefreshDesktop}>
             <Icon name="refresh" size={13} />
-            重新检测
+            {t.common.redetect}
           </button>
         </div>
-        <SettingRow title="状态" desc={desktop?.running ? `PID ${desktop.pid}` : undefined}>
+        <SettingRow title={t.settings.status} desc={desktop?.running ? `PID ${desktop.pid}` : undefined}>
           <span className={`status ${desktop?.running ? "on" : desktop?.installed ? "" : "bad"}`}>
             <i />
-            {!desktop ? "检测中…" : desktop.running ? "运行中" : desktop.installed ? "未运行" : "没找到安装"}
+            {!desktop ? t.settings.detecting : desktop.running ? t.desktop.running : desktop.installed ? t.desktop.stopped : t.desktop.notInstalled}
           </span>
         </SettingRow>
-        {desktop?.exe && <PathRow title="程序位置" path={desktop.exe} onReveal={reveal} />}
+        {desktop?.exe && <PathRow title={t.settings.exe} path={desktop.exe} onReveal={reveal} />}
       </section>
 
       <section className="panel">
-        <h2>数据位置</h2>
-        <PathRow title="Quick 账号目录" path={info?.base_dir} onReveal={reveal} />
-        <PathRow title="账号库" path={info?.vault_dir} onReveal={reveal} />
-        <PathRow title="清单备份" path={info?.backups_dir} onReveal={reveal} />
+        <h2>{t.settings.dataDirs}</h2>
+        <PathRow title={t.settings.baseDir} path={info?.base_dir} onReveal={reveal} />
+        <PathRow title={t.settings.vaultDir} path={info?.vault_dir} onReveal={reveal} />
+        <PathRow title={t.settings.backupsDir} path={info?.backups_dir} onReveal={reveal} />
       </section>
 
       <section className="panel">
-        <h2>快捷键</h2>
+        <h2>{t.settings.shortcuts}</h2>
         <ul className="shortcuts">
           {SHORTCUTS.map(([keys, what]) => (
             <li key={keys}>
-              <span>{what}</span>
+              <span>{t.settings.shortcutList[what]}</span>
               <kbd>{keys}</kbd>
             </li>
           ))}
@@ -125,10 +140,10 @@ export default function SettingsPage({ info, desktop, onRefreshDesktop }: Props)
       <AboutUpdates />
 
       <p className="about">
-        AWS Quick Manager {info ? `v${info.version}` : ""} · 非官方工具，与 Amazon Web Services 无关 · MIT
+        AWS Quick Manager {info ? `v${info.version}` : ""} · {t.settings.about} · MIT
         {" · "}
         <a href="https://github.com/httpdone/aws-quick-manager" target="_blank" rel="noopener noreferrer">
-          GitHub 主页
+          {t.settings.github}
         </a>
       </p>
     </div>
@@ -142,6 +157,7 @@ type UpdateState =
 
 function AboutUpdates() {
   const { toast } = useUI();
+  const t = useT();
   const [update, setUpdate] = useState<UpdateState>({ status: "idle" });
 
   const check = async () => {
@@ -156,27 +172,27 @@ function AboutUpdates() {
   const result = update.status === "done" ? update.info : null;
   const status = result
     ? result.update_available
-      ? `发现新版本 v${result.latest}`
-      : `已是最新版本 (v${result.current})`
+      ? t.settings.updateAvailable(result.latest)
+      : t.settings.upToDate(result.current)
     : update.status === "error"
-      ? `检查失败：${update.reason}`
-      : update.status === "checking" ? "正在检查更新…" : "";
+      ? t.settings.updateFailed(update.reason)
+      : update.status === "checking" ? t.settings.checking : "";
 
   return (
     <section className="panel">
-      <h2>关于</h2>
+      <h2>{t.settings.aboutTitle}</h2>
       <div className="settingRow">
         <div>
-          <b>版本更新</b>
+          <b>{t.settings.updates}</b>
           <small role="status">{status}</small>
         </div>
         <div className="actions">
           <button className="btn sm" onClick={check} disabled={update.status === "checking"}>
-            检查更新
+            {t.settings.checkUpdates}
           </button>
           {result?.update_available && (
             <button className="btn sm" onClick={() => openUrl(result.release_url).catch((e) => toast(String(e), "bad"))}>
-              打开发布页面
+              {t.settings.openRelease}
             </button>
           )}
         </div>
@@ -198,6 +214,7 @@ function SettingRow({ title, desc, children }: { title: string; desc?: string; c
 }
 
 function PathRow({ title, path, onReveal }: { title: string; path?: string | null; onReveal: (p: string) => void }) {
+  const t = useT();
   return (
     <div className="settingRow">
       <div className="minw0">
@@ -209,7 +226,7 @@ function PathRow({ title, path, onReveal }: { title: string; path?: string | nul
       <div className="actions">
         {path && <CopyButton text={path} />}
         {path && (
-          <button className="iconBtn xs" onClick={() => onReveal(path)} title="在文件夹中显示">
+          <button className="iconBtn xs" onClick={() => onReveal(path)} title={t.common.revealInFolder}>
             <Icon name="folder" size={13} />
           </button>
         )}

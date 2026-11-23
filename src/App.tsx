@@ -13,6 +13,8 @@ import {
   listAccounts,
   syncFromDesktop,
 } from "./lib/api";
+import { useT } from "./i18n";
+import type { Messages } from "./i18n";
 import { canQuota, who } from "./lib/status";
 import Icon, { IconName } from "./components/Icon";
 import { cx, useUI } from "./components/ui";
@@ -28,26 +30,29 @@ import SettingsPage from "./pages/SettingsPage";
 
 type Page = "accounts" | "sessions" | "devices" | "backups" | "settings";
 
-const PAGES: { id: Page; label: string; icon: IconName }[] = [
-  { id: "accounts", label: "账号", icon: "users" },
-  { id: "sessions", label: "会话", icon: "chat" },
-  { id: "devices", label: "设备 ID", icon: "cpu" },
-  { id: "backups", label: "清单备份", icon: "archive" },
-  { id: "settings", label: "设置", icon: "settings" },
+const PAGES: { id: Page; icon: IconName }[] = [
+  { id: "accounts", icon: "users" },
+  { id: "sessions", icon: "chat" },
+  { id: "devices", icon: "cpu" },
+  { id: "backups", icon: "archive" },
+  { id: "settings", icon: "settings" },
 ];
 
 const DESKTOP_POLL_MS = 15000;
 
 /** Only news worth a toast: newly imported or skipped accounts. */
-function syncNotice(r: ImportReport): string {
+function syncNotice(r: ImportReport, t: Messages): string {
   const parts: string[] = [];
-  if (r.imported.length) parts.push(`从 Quick 导入了 ${r.imported.length} 个新账号`);
-  if (r.skipped.length) parts.push(`${r.skipped.length} 个账号读不到凭据，已跳过`);
-  return parts.join("；");
+  if (r.imported.length) parts.push(t.app.imported(r.imported.length));
+  if (r.skipped.length) parts.push(t.app.skipped(r.skipped.length));
+  return parts.join(t.common.joinSep);
 }
 
 export default function App() {
   const { toast } = useUI();
+  const t = useT();
+  const tRef = useRef(t);
+  tRef.current = t;
   const [page, setPage] = useState<Page>("accounts");
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [usages, setUsages] = useState<Record<string, Usage>>({});
@@ -107,10 +112,10 @@ export default function App() {
       setLoading(true);
       if (sync) {
         try {
-          const text = syncNotice(await syncFromDesktop());
+          const text = syncNotice(await syncFromDesktop(), tRef.current);
           if (text) toast(text, "info");
         } catch (e) {
-          toast(`从 Quick 同步账号失败：${String(e)}`, "bad");
+          toast(tRef.current.app.syncFailed(String(e)), "bad");
         }
       }
       try {
@@ -143,7 +148,7 @@ export default function App() {
       .catch(() => {});
   }, [refresh]);
 
-  // tray menu "刷新账号"
+  // tray menu "refresh"
   useEffect(() => {
     let alive = true;
     let unlisten: (() => void) | undefined;
@@ -205,7 +210,7 @@ export default function App() {
 
   const switched = (r: SwitchReport, a: Account) => {
     setSwitchTarget(null);
-    toast(r.note ?? (r.launched ? `已切换到 ${who(a)}，Quick 正在启动` : `已切换到 ${who(a)}`), r.note ? "info" : "ok");
+    toast(r.note ?? (r.launched ? t.app.switchedLaunching(who(a)) : t.app.switched(who(a))), r.note ? "info" : "ok");
     refresh();
   };
 
@@ -224,7 +229,7 @@ export default function App() {
     refresh();
   };
 
-  const desktopText = !desktop ? "正在检测…" : desktop.running ? "运行中" : desktop.installed ? "未运行" : "没找到安装";
+  const desktopText = !desktop ? t.desktop.detecting : desktop.running ? t.desktop.running : desktop.installed ? t.desktop.stopped : t.desktop.notInstalled;
 
   return (
     <div className="app">
@@ -235,15 +240,15 @@ export default function App() {
           </span>
           <div className="brandText">
             <b>Quick Manager</b>
-            <small>AWS Quick 账号管理</small>
+            <small>{t.app.tagline}</small>
           </div>
         </div>
 
         <nav className="nav">
           {PAGES.map((p, i) => (
-            <button key={p.id} className={cx("navItem", page === p.id && "on")} onClick={() => setPage(p.id)} title={`${p.label}（Ctrl+${i + 1}）`}>
+            <button key={p.id} className={cx("navItem", page === p.id && "on")} onClick={() => setPage(p.id)} title={t.app.navTitle(t.app.pages[p.id], i + 1)}>
               <Icon name={p.icon} size={17} />
-              <span className="navLabel">{p.label}</span>
+              <span className="navLabel">{t.app.pages[p.id]}</span>
               {p.id === "accounts" && accounts && <em>{accounts.length}</em>}
             </button>
           ))}
@@ -251,18 +256,18 @@ export default function App() {
 
         <div className="sideFoot">
           {current && (
-            <button className="sideCurrent" onClick={() => setDetailsFor(current)} title="当前账号">
-              <span className="sideLabel">当前账号</span>
+            <button className="sideCurrent" onClick={() => setDetailsFor(current)} title={t.common.currentAccount}>
+              <span className="sideLabel">{t.common.currentAccount}</span>
               <b className="truncate">{who(current)}</b>
             </button>
           )}
           <div className="deskStatus" title={desktop?.exe ?? undefined}>
             <span className={cx("dot", desktop?.running && "on", desktop && !desktop.installed && "bad")} />
             <span className="deskText">
-              <span className="sideLabel">Quick 桌面端</span>
+              <span className="sideLabel">{t.desktop.label}</span>
               <b>{desktopText}</b>
             </span>
-            <button className="iconBtn xs" onClick={refreshDesktop} title="重新检测">
+            <button className="iconBtn xs" onClick={refreshDesktop} title={t.common.redetect}>
               <Icon name="refresh" size={13} />
             </button>
           </div>
