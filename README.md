@@ -23,6 +23,22 @@ Quick keeps chat history in the cloud, per account. The local `sessions.db` is o
 
 Reverse proxy and API forwarding are out of scope; use [magpie-aws-quick](https://github.com/httpdone/magpie-aws-quick) for that.
 
+## Screenshots
+
+The screenshots show the Chinese UI with sample data.
+
+**Account overview and remaining Agent hours**
+
+![Account list showing the active account and remaining Agent hours for each account](docs/screenshots/accounts.png)
+
+**Switching accounts**
+
+![Confirmation dialog showing the current and target accounts and the steps Quick Manager will take](docs/screenshots/switch-account.png)
+
+**Session export and cross-account copy**
+
+![Cloud session list with a session selected and controls to export it or copy it to another account](docs/screenshots/sessions.png)
+
 ## Development
 
 Requires Node ≥ 22, pnpm and Rust.

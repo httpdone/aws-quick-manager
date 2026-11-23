@@ -23,6 +23,22 @@ Quick 的聊天记录存在云端，按账号保存。本地的 `sessions.db` �
 
 不做反向代理和 API 转发，需要的话用 [magpie-aws-quick](https://github.com/httpdone/magpie-aws-quick)。
 
+## 界面截图
+
+截图中的账号和会话均为示例数据。
+
+**账号总览与剩余 Agent 时长**
+
+![账号列表显示当前账号和每个账号的剩余 Agent 时长](docs/screenshots/accounts.png)
+
+**切换账号**
+
+![切换确认窗口显示当前账号、目标账号和切换步骤](docs/screenshots/switch-account.png)
+
+**会话导出与跨账号复制**
+
+![云端会话列表中已选中一个会话，可导出或复制到其他账号](docs/screenshots/sessions.png)
+
 ## 开发
 
 需要 Node ≥ 22、pnpm 和 Rust。
