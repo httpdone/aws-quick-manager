@@ -1,6 +1,6 @@
 [package]
 name = "aws-quick-manager"
-version = "0.1.0"
+version = "0.1.1"
 description = "Account manager and switcher for the Amazon Quick desktop app"
 authors = ["httpdone"]
 license = "MIT"
