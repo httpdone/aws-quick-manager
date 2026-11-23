@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useState } from "react";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { AppInfo, DesktopStatus, autostartEnabled, setAutostart } from "../lib/api";
+import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { AppInfo, DesktopStatus, UpdateInfo, autostartEnabled, checkForUpdate, setAutostart } from "../lib/api";
 import { Theme, getLaunchAfterSwitch, getTheme, setLaunchAfterSwitch, setTheme } from "../lib/prefs";
 import Icon from "../components/Icon";
 import { CopyButton, Segmented, Toggle, useUI } from "../components/ui";
@@ -122,10 +122,62 @@ export default function SettingsPage({ info, desktop, onRefreshDesktop }: Props)
         </ul>
       </section>
 
+      <AboutUpdates />
+
       <p className="about">
         AWS Quick Manager {info ? `v${info.version}` : ""} · 非官方工具，与 Amazon Web Services 无关 · MIT
       </p>
     </div>
+  );
+}
+
+type UpdateState =
+  | { status: "idle" | "checking" }
+  | { status: "done"; info: UpdateInfo }
+  | { status: "error"; reason: string };
+
+function AboutUpdates() {
+  const { toast } = useUI();
+  const [update, setUpdate] = useState<UpdateState>({ status: "idle" });
+
+  const check = async () => {
+    setUpdate({ status: "checking" });
+    try {
+      setUpdate({ status: "done", info: await checkForUpdate() });
+    } catch (e) {
+      setUpdate({ status: "error", reason: String(e) });
+    }
+  };
+
+  const result = update.status === "done" ? update.info : null;
+  const status = result
+    ? result.update_available
+      ? `发现新版本 v${result.latest}`
+      : `已是最新版本 (v${result.current})`
+    : update.status === "error"
+      ? `检查失败：${update.reason}`
+      : update.status === "checking" ? "正在检查更新…" : "";
+
+  return (
+    <section className="panel">
+      <h2>关于</h2>
+      <div className="settingRow">
+        <div>
+          <b>版本更新</b>
+          <small role="status">{status}</small>
+        </div>
+        <div className="actions">
+          <button className="btn sm" onClick={check} disabled={update.status === "checking"}>
+            检查更新
+          </button>
+          {result?.update_available && (
+            <button className="btn sm" onClick={() => openUrl(result.release_url).catch((e) => toast(String(e), "bad"))}>
+              打开发布页面
+            </button>
+          )}
+        </div>
+      </div>
+    </section>
   );
 }
 
