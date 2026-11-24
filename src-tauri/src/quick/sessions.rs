@@ -43,6 +43,56 @@ pub struct SessionInfo {
     pub archived: bool,
 }
 
+/// Headings in exported Markdown, in the UI's language (`en`, else Chinese).
+pub(crate) struct ExportLabels {
+    pub session_id: &'static str,
+    pub account: &'static str,
+    pub updated: &'static str,
+    pub messages: &'static str,
+    pub synced: &'static str,
+    pub yes: &'static str,
+    pub local_only: &'static str,
+    pub no_events: &'static str,
+    pub untitled: &'static str,
+}
+
+pub(crate) fn export_labels(lang: &str) -> ExportLabels {
+    if lang == "en" {
+        ExportLabels {
+            session_id: "Session ID",
+            account: "Account",
+            updated: "Updated",
+            messages: "Messages",
+            synced: "Synced to cloud",
+            yes: "Yes",
+            local_only: "No (local only)",
+            no_events: "_No events for this session in the local database._",
+            untitled: "Untitled session",
+        }
+    } else {
+        ExportLabels {
+            session_id: "会话 ID",
+            account: "账号",
+            updated: "更新时间",
+            messages: "消息数",
+            synced: "云端同步",
+            yes: "是",
+            local_only: "否（仅本地）",
+            no_events: "_本地库里没有这个会话的事件。_",
+            untitled: "未命名会话",
+        }
+    }
+}
+
+/// Unix seconds as RFC 3339, "—" when unknown.
+pub(crate) fn fmt_secs(secs: f64) -> String {
+    if secs > 0.0 {
+        chrono::DateTime::from_timestamp(secs as i64, 0).map(|t| t.to_rfc3339()).unwrap_or_else(|| secs.to_string())
+    } else {
+        "—".into()
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionExport {
     pub path: String,
@@ -175,12 +225,14 @@ pub fn export(
     account_id: &str,
     ids: &[String],
     format: &str,
+    lang: &str,
 ) -> Result<SessionExport, SessionError> {
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
-    export_to(&switcher::app_dir().join("exports").join(&stamp), base, account_id, ids, format)
+    export_to(&switcher::app_dir().join("exports").join(&stamp), base, account_id, ids, format, lang)
 }
 
-fn export_to(dir: &Path, base: &Path, account_id: &str, ids: &[String], format: &str) -> Result<SessionExport, SessionError> {
+fn export_to(dir: &Path, base: &Path, account_id: &str, ids: &[String], format: &str, lang: &str) -> Result<SessionExport, SessionError> {
+    let l = export_labels(lang);
     let all = list(base, account_id)?;
     let selected: Vec<SessionInfo> = if ids.is_empty() {
         all
@@ -205,22 +257,22 @@ fn export_to(dir: &Path, base: &Path, account_id: &str, ids: &[String], format: 
         events_total += events.len();
         if markdown {
             let mut text = format!(
-                "# {}\n\n- 会话 ID: {}\n- 账号: {}\n- 更新时间: {}\n- 消息数: {}\n- 云端同步: {}\n\n",
-                if session.title.is_empty() { &session.id } else { &session.title },
+                "# {}\n\n- {}: {}\n- {}: {}\n- {}: {}\n- {}: {}\n- {}: {}\n\n",
+                if session.title.is_empty() { l.untitled } else { &session.title },
+                l.session_id,
                 session.id,
+                l.account,
                 account_id,
-                if session.updated_at > 0.0 {
-                    chrono::DateTime::from_timestamp(session.updated_at as i64, 0)
-                        .map(|t| t.to_rfc3339())
-                        .unwrap_or_else(|| session.updated_at.to_string())
-                } else {
-                    "—".into()
-                },
+                l.updated,
+                fmt_secs(session.updated_at),
+                l.messages,
                 session.message_count,
-                if session.server_session_id.is_empty() { "否（仅本地）" } else { "是" }
+                l.synced,
+                if session.server_session_id.is_empty() { l.local_only } else { l.yes }
             );
             if events.is_empty() {
-                text.push_str("_本地库里没有这个会话的事件。_\n");
+                text.push_str(l.no_events);
+                text.push('\n');
             }
             for (kind, ts, data) in &events {
                 let time = chrono::DateTime::from_timestamp(*ts as i64, 0)
@@ -343,10 +395,11 @@ mod tests {
     #[test]
     fn markdown_export_includes_event_text() {
         let root = setup("md");
-        let out = export_to(&root.join("out"), &root.join("base"), "social-a", &["s-old".into()], "md").unwrap();
+        let out = export_to(&root.join("out"), &root.join("base"), "social-a", &["s-old".into()], "md", "en").unwrap();
         assert_eq!((out.sessions, out.events), (1, 2));
         let text = fs::read_to_string(&out.path).unwrap();
         assert!(text.starts_with("# Old"));
+        assert!(text.contains("- Session ID: s-old") && text.contains("- Synced to cloud: Yes"));
         assert!(text.contains("hello") && text.contains("hi there"));
         let _ = fs::remove_dir_all(&root);
     }
@@ -354,12 +407,12 @@ mod tests {
     #[test]
     fn json_export_of_several_sessions_is_one_valid_array() {
         let root = setup("json");
-        let out = export_to(&root.join("out"), &root.join("base"), "social-a", &[], "json").unwrap();
+        let out = export_to(&root.join("out"), &root.join("base"), "social-a", &[], "json", "en").unwrap();
         let v: Value = serde_json::from_str(&fs::read_to_string(&out.path).unwrap()).unwrap();
         assert_eq!(v.as_array().unwrap().len(), 2);
         assert_eq!(out.sessions, 2);
 
-        let one = export_to(&root.join("out1"), &root.join("base"), "social-a", &["s-old".into()], "json").unwrap();
+        let one = export_to(&root.join("out1"), &root.join("base"), "social-a", &["s-old".into()], "json", "en").unwrap();
         let v: Value = serde_json::from_str(&fs::read_to_string(&one.path).unwrap()).unwrap();
         assert_eq!(v["session"]["id"], "s-old");
         assert_eq!(v["events"][0]["data"]["content"], "hello");
@@ -370,7 +423,7 @@ mod tests {
     fn nothing_selected_is_an_error() {
         let root = setup("empty");
         assert!(matches!(
-            export_to(&root.join("out"), &root.join("base"), "social-a", &["nope".into()], "md"),
+            export_to(&root.join("out"), &root.join("base"), "social-a", &["nope".into()], "md", "en"),
             Err(SessionError::NothingToExport)
         ));
         let _ = fs::remove_dir_all(&root);
@@ -381,5 +434,18 @@ mod tests {
         assert_eq!(safe_name("a/b:c?"), "a-b-c-");
         assert_eq!(safe_name("  ..  "), "session");
         assert_eq!(safe_name(&"x".repeat(100)).len(), 60);
+    }
+
+    #[test]
+    fn markdown_headings_follow_the_language() {
+        let root = setup("lang");
+        let zh = export_to(&root.join("zh"), &root.join("base"), "social-a", &["s-new".into()], "md", "zh").unwrap();
+        let text = fs::read_to_string(&zh.path).unwrap();
+        assert!(text.starts_with("# 未命名会话"));
+        assert!(text.contains("- 会话 ID: s-new") && text.contains("否（仅本地）") && text.contains("本地库里没有这个会话的事件"));
+        let en = export_to(&root.join("en"), &root.join("base"), "social-a", &["s-new".into()], "md", "en").unwrap();
+        let text = fs::read_to_string(&en.path).unwrap();
+        assert!(text.starts_with("# Untitled session") && text.contains("No (local only)"));
+        let _ = fs::remove_dir_all(&root);
     }
 }

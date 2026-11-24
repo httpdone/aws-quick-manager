@@ -44,7 +44,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 rusqlite = { version = "0.37", features = ["bundled"] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security_Credentials"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.6.0"

@@ -278,8 +278,8 @@ async fn list_cloud_sessions(account_id: String) -> Result<Vec<quick::cloud_sess
 }
 
 #[tauri::command(async)]
-async fn export_cloud_sessions(account_id: String, ids: Vec<String>, format: String) -> Result<quick::cloud_sessions::CloudExport, AppError> {
-    quick::cloud_sessions::export(&profiles::base_dir(), &account_id, &ids, &format).await.map_err(AppError::from)
+async fn export_cloud_sessions(account_id: String, ids: Vec<String>, format: String, lang: String) -> Result<quick::cloud_sessions::CloudExport, AppError> {
+    quick::cloud_sessions::export(&profiles::base_dir(), &account_id, &ids, &format, &lang).await.map_err(AppError::from)
 }
 
 #[tauri::command(async)]
@@ -299,8 +299,8 @@ fn list_sessions(account_id: String) -> Result<Vec<quick::sessions::SessionInfo>
 }
 
 #[tauri::command(async)]
-fn export_sessions(account_id: String, ids: Vec<String>, format: String) -> Result<quick::sessions::SessionExport, AppError> {
-    quick::sessions::export(&profiles::base_dir(), &account_id, &ids, &format).map_err(AppError::from)
+fn export_sessions(account_id: String, ids: Vec<String>, format: String, lang: String) -> Result<quick::sessions::SessionExport, AppError> {
+    quick::sessions::export(&profiles::base_dir(), &account_id, &ids, &format, &lang).map_err(AppError::from)
 }
 
 #[tauri::command(async)]

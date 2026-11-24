@@ -390,11 +390,11 @@ pub fn import_from_desktop(base: &Path, store: &dyn RawStore, vault_dir: &Path) 
         let blob = match credstore::read_session_text(store, &profiles::credential_target(e)) {
             Ok(Some(b)) => b,
             Ok(None) => {
-                report.skipped.push((id.into(), "桌面端没有可读取的登录凭据".into()));
+                report.skipped.push((id.into(), "no readable credentials in Quick".into()));
                 continue;
             }
             Err(err) => {
-                report.skipped.push((id.into(), format!("桌面端凭据读取失败：{err}")));
+                report.skipped.push((id.into(), format!("couldn't read Quick's credentials: {err}")));
                 continue;
             }
         };

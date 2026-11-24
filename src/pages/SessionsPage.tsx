@@ -10,7 +10,7 @@ import {
   listCloudSessions,
   listSessions,
 } from "../lib/api";
-import { useT } from "../i18n";
+import { useI18n } from "../i18n";
 import { errorText } from "../lib/errors";
 import { fmtRelative, fmtDate, hue } from "../lib/format";
 import { getStored } from "../lib/prefs";
@@ -37,7 +37,7 @@ interface Row {
 }
 
 export default function SessionsPage({ accounts }: Props) {
-  const t = useT();
+  const { t, lang } = useI18n();
   const { toast, confirm } = useUI();
   const [source, setSource] = useState<Source>(() => getStored("aqm_sessions_tab", SOURCES, "cloud"));
   const [accountId, setAccountId] = useState("");
@@ -131,7 +131,7 @@ export default function SessionsPage({ accounts }: Props) {
     if (!account) return;
     setBusy("export");
     try {
-      const result = cloud ? await exportCloudSessions(account.id, ids, format) : await exportSessions(account.id, ids, format);
+      const result = cloud ? await exportCloudSessions(account.id, ids, format, lang) : await exportSessions(account.id, ids, format, lang);
       const count = "events" in result ? result.events : result.messages;
       toast(t.sessions.exported(result.sessions, count, cloud), "ok", {
         label: t.common.revealInFolder,

@@ -213,10 +213,20 @@ impl Agent {
         let agent = agent_path().ok_or(CloudError::NoAgent)?;
 
         let root = std::env::temp_dir().join(format!("aqm-cloud-{}", token()));
+        let result = Self::spawn_in(root.clone(), &real_base, &source, &agent, entry);
+        if result.is_err() {
+            let _ = fs::remove_dir_all(&root);
+        }
+        result
+    }
+
+    /// Prepare the temp base under `root` and start the agent there. The
+    /// caller removes `root` if this fails.
+    fn spawn_in(root: PathBuf, real_base: &Path, source: &Path, agent: &Path, entry: profiles::ProfileEntry) -> Result<Self, CloudError> {
         let base = root.join("base");
         let profile = base.join("profiles").join(&entry.id);
         fs::create_dir_all(&profile)?;
-        copy_profile(&source, &profile)?;
+        copy_profile(source, &profile)?;
         for name in ["device_configuration_id", "device_space_id"] {
             let from = real_base.join(name);
             if from.is_file() {
@@ -231,7 +241,7 @@ impl Agent {
 
         let port = free_port()?;
         let token = token();
-        let mut command = Command::new(&agent);
+        let mut command = Command::new(agent);
         command
             .args(["--outpost-only", "--manifest", "desktop", "--port", &port.to_string()])
             .env("QUICKWORK_BASE", &base)
@@ -249,6 +259,12 @@ impl Agent {
         {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x0800_0000);
+        }
+        // its own process group, so everything it starts can be ended with it
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
         }
         let mut child = command.spawn().map_err(|e| CloudError::Spawn(e.to_string()))?;
         if let Some(stdin) = child.stdin.as_mut() {
@@ -299,11 +315,35 @@ impl Agent {
     }
 }
 
+/// End the agent and everything it started (it may launch helpers such as
+/// its sandbox). Killing only the agent would leave those running.
+fn kill_tree(child: &mut Child) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .creation_flags(0x0800_0000)
+            .output();
+    }
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill").args(["-KILL", "--", &format!("-{}", child.id())]).output();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 impl Drop for Agent {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = fs::remove_dir_all(&self.base);
+        kill_tree(&mut self.child);
+        // a process that just died can hold its files for a moment on Windows
+        for _ in 0..5 {
+            if fs::remove_dir_all(&self.base).is_ok() || !self.base.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
     }
 }
 
@@ -391,7 +431,7 @@ fn message_text(content: &Value) -> String {
     }
 }
 
-pub async fn export(base: &Path, account_id: &str, ids: &[String], format: &str) -> Result<CloudExport, CloudError> {
+pub async fn export(base: &Path, account_id: &str, ids: &[String], format: &str, lang: &str) -> Result<CloudExport, CloudError> {
     let _ = base;
     let agent = Agent::start(account_id)?;
     agent.wait_ready().await?;
@@ -434,15 +474,19 @@ pub async fn export(base: &Path, account_id: &str, ids: &[String], format: &str)
     }
 
     if markdown {
+        let l = super::sessions::export_labels(lang);
         let mut text = String::new();
         for (_, doc) in &docs {
             let s = &doc["session"];
             text.push_str(&format!(
-                "# {}\n\n- 会话 ID: {}\n- 消息数: {}\n- 更新时间: {}\n\n",
-                s.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).unwrap_or("未命名会话"),
+                "# {}\n\n- {}: {}\n- {}: {}\n- {}: {}\n\n",
+                s.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).unwrap_or(l.untitled),
+                l.session_id,
                 s.get("id").and_then(Value::as_str).unwrap_or_default(),
+                l.messages,
                 s.get("message_count").and_then(Value::as_i64).unwrap_or(0),
-                s.get("updated_at").and_then(Value::as_f64).map(|t| t.to_string()).unwrap_or_else(|| "—".into()),
+                l.updated,
+                super::sessions::fmt_secs(s.get("updated_at").and_then(Value::as_f64).unwrap_or(0.0)),
             ));
             for m in doc["messages"].as_array().cloned().unwrap_or_default() {
                 let role = m.get("role").and_then(Value::as_str).unwrap_or("message");

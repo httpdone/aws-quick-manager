@@ -186,7 +186,7 @@ pub fn parse_ps_json(text: &str) -> Result<Vec<Proc>, DesktopError> {
     if text.is_empty() {
         return Ok(Vec::new());
     }
-    let v: Value = serde_json::from_str(text).map_err(|e| DesktopError::Probe(format!("无法解析进程列表：{e}")))?;
+    let v: Value = serde_json::from_str(text).map_err(|e| DesktopError::Probe(format!("can't parse the process list: {e}")))?;
     let items = match v {
         Value::Array(a) => a,
         o @ Value::Object(_) => vec![o],
@@ -393,7 +393,7 @@ pub fn force_quit(p: &Proc) -> Result<(), DesktopError> {
         }
         sleep(Duration::from_millis(200));
     }
-    Err(DesktopError::ForceKill("进程仍在运行".into()))
+    Err(DesktopError::ForceKill("the process is still running".into()))
 }
 
 /// PIDs of the app's Python backend, found among the root's descendants. A
@@ -459,7 +459,7 @@ pub fn launch(bundle: &str) -> Result<(), DesktopError> {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 pub fn launch(_: &str) -> Result<(), DesktopError> {
-    Err(DesktopError::Launch("只支持 Windows 和 macOS".into()))
+    Err(DesktopError::Launch("only Windows and macOS are supported".into()))
 }
 
 #[cfg(test)]

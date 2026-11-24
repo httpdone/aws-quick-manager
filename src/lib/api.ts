@@ -219,11 +219,12 @@ export const loginAccount = () => invoke<LoginOutcome>("login_account");
 /** Sign in to an existing account again and replace its stored sign-in. */
 export const reloginAccount = (id: string) => invoke<LoginOutcome>("relogin_account", { id });
 export const listSessions = (accountId: string) => invoke<SessionInfo[]>("list_sessions", { accountId });
-export const exportSessions = (accountId: string, ids: string[], format: "md" | "json") =>
-  invoke<SessionExport>("export_sessions", { accountId, ids, format });
+/** `lang` picks the language of the Markdown headings. */
+export const exportSessions = (accountId: string, ids: string[], format: "md" | "json", lang: "zh" | "en") =>
+  invoke<SessionExport>("export_sessions", { accountId, ids, format, lang });
 export const listCloudSessions = (accountId: string) => invoke<CloudSession[]>("list_cloud_sessions", { accountId });
-export const exportCloudSessions = (accountId: string, ids: string[], format: "md" | "json") =>
-  invoke<CloudExport>("export_cloud_sessions", { accountId, ids, format });
+export const exportCloudSessions = (accountId: string, ids: string[], format: "md" | "json", lang: "zh" | "en") =>
+  invoke<CloudExport>("export_cloud_sessions", { accountId, ids, format, lang });
 export const importCloudSessions = (sourceAccountId: string, targetAccountId: string, ids: string[]) =>
   invoke<CloudImport[]>("import_cloud_sessions", { sourceAccountId, targetAccountId, ids });
 export const manualLoginStart = () => invoke<string>("manual_login_start");

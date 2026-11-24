@@ -189,13 +189,13 @@ pub async fn refresh(http: &reqwest::Client, region: &str, client_id: &str, clie
 /// Every field the desktop stored is kept; only the token fields the server
 /// returned are replaced, so a blob written back stays readable by the app.
 pub async fn refresh_blob(http: &reqwest::Client, blob: &str) -> Result<String, ApiError> {
-    let mut v: Value = serde_json::from_str(blob).map_err(|e| ApiError::Http(format!("凭据不是 JSON：{e}")))?;
+    let mut v: Value = serde_json::from_str(blob).map_err(|e| ApiError::Http(format!("stored credentials are not JSON: {e}")))?;
     let client_id = s(&v, &["client_id"]);
     let client_secret = s(&v, &["client_secret"]);
     let refresh_token = s(&v, &["refresh_token"]);
     let tenant = s(&v, &["tenant_url", "issuer_url"]);
     if client_id.is_empty() || refresh_token.is_empty() {
-        return Err(ApiError::Auth("凭据里没有 client_id 或 refresh_token".into()));
+        return Err(ApiError::Auth("stored credentials have no client_id or refresh_token".into()));
     }
     let t = refresh(http, &region_of(&tenant), &client_id, &client_secret, &refresh_token).await?;
     let lifetime = if t.expires_in > 0 { t.expires_in } else { 3600 };
@@ -339,20 +339,20 @@ pub async fn usage(http: &reqwest::Client, tenant_url: &str, access_token: &str,
 /// it is missing or about to expire. Returns the (possibly refreshed) blob so
 /// the caller can persist a rotated refresh token.
 pub async fn usage_for_blob(http: &reqwest::Client, blob: &str) -> Result<(String, Usage), ApiError> {
-    let mut v: Value = serde_json::from_str(blob).map_err(|e| ApiError::Http(format!("凭据不是 JSON：{e}")))?;
+    let mut v: Value = serde_json::from_str(blob).map_err(|e| ApiError::Http(format!("stored credentials are not JSON: {e}")))?;
     let now = chrono::Utc::now().timestamp() as f64;
     let expires = v.get("access_token_expiry").and_then(Value::as_f64).unwrap_or(0.0);
     let missing = v.get("access_token").and_then(Value::as_str).unwrap_or("").is_empty();
     let mut current = blob.to_string();
     if missing || expires <= now + 60.0 {
         current = refresh_blob(http, blob).await?;
-        v = serde_json::from_str(&current).map_err(|e| ApiError::Http(format!("凭据不是 JSON：{e}")))?;
+        v = serde_json::from_str(&current).map_err(|e| ApiError::Http(format!("stored credentials are not JSON: {e}")))?;
     }
     let token = s(&v, &["access_token"]);
     let tenant = s(&v, &["tenant_url"]);
     let aws = s(&v, &["aws_account_id"]);
     if token.is_empty() || tenant.is_empty() || aws.is_empty() {
-        return Err(ApiError::Http("凭据里缺少 access_token、tenant_url 或 aws_account_id".into()));
+        return Err(ApiError::Http("stored credentials lack access_token, tenant_url or aws_account_id".into()));
     }
     let usage = usage(http, &tenant, &token, &aws).await?;
     Ok((current, usage))
