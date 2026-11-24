@@ -101,15 +101,27 @@ fn agent_path() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
-fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+/// Folders of a profile the backend doesn't need to sign in. The session
+/// store and the knowledge base can be large, and Quick may be writing them;
+/// an account with neither (a freshly added one) already lists its cloud
+/// sessions fine.
+const SKIP_DIRS: &[&str] = &["knowledge_storage", "sessions", "logs", "cache", "Cache", "metrics"];
+/// Larger files are databases or caches, not sign-in state.
+const MAX_COPY: u64 = 16 * 1024 * 1024;
+
+fn copy_profile(src: &Path, dst: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if from.is_dir() {
-            copy_dir(&from, &to)?;
-        } else {
+        let name = entry.file_name();
+        let to = dst.join(&name);
+        let meta = entry.metadata()?;
+        if meta.is_dir() {
+            if !SKIP_DIRS.iter().any(|s| name.to_string_lossy() == *s) {
+                copy_profile(&from, &to)?;
+            }
+        } else if meta.len() <= MAX_COPY {
             fs::copy(&from, &to)?;
         }
     }
@@ -143,7 +155,7 @@ impl Agent {
         let base = root.join("base");
         let profile = base.join("profiles").join(&entry.id);
         fs::create_dir_all(&profile)?;
-        copy_dir(&source, &profile)?;
+        copy_profile(&source, &profile)?;
         for name in ["device_configuration_id", "device_space_id"] {
             let from = real_base.join(name);
             if from.is_file() {
@@ -600,4 +612,35 @@ pub async fn import_to_account(
         });
     }
     Ok(imports)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_copy_keeps_sign_in_files_and_skips_big_data() {
+        let root = std::env::temp_dir().join(format!("aqm-cloudcopy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let src = root.join("src");
+        fs::create_dir_all(src.join("knowledge_storage")).unwrap();
+        fs::create_dir_all(src.join("sessions")).unwrap();
+        fs::create_dir_all(src.join("agents")).unwrap();
+        fs::write(src.join("device_id"), "dev-1").unwrap();
+        fs::write(src.join("agents").join("a.json"), "{}").unwrap();
+        fs::write(src.join("knowledge_storage").join("knowledge_v1.db"), "x").unwrap();
+        fs::write(src.join("sessions").join("sessions.db"), "x").unwrap();
+        let big = fs::File::create(src.join("big.db")).unwrap();
+        big.set_len(MAX_COPY + 1).unwrap();
+        drop(big);
+
+        let dst = root.join("dst");
+        copy_profile(&src, &dst).unwrap();
+        assert_eq!(fs::read_to_string(dst.join("device_id")).unwrap(), "dev-1");
+        assert!(dst.join("agents").join("a.json").is_file());
+        assert!(!dst.join("knowledge_storage").exists());
+        assert!(!dst.join("sessions").exists());
+        assert!(!dst.join("big.db").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
 }

@@ -641,6 +641,46 @@ kbd {
 /* ============================================================
    Lists: sessions
    ============================================================ */
+/* sessions: two sections, cloud transfer first */
+.sessionTabs { display: grid; grid-template-columns: 1.35fr 1fr; gap: 10px; margin-bottom: 14px; }
+.sessionTab { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); color: var(--text); text-align: left; transition: border-color 0.12s, box-shadow 0.12s, background 0.12s; }
+.sessionTab:hover:not(:disabled):not(.on) { border-color: var(--border-strong); }
+.sessionTab:disabled { opacity: 0.6; }
+.sessionTab.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+.sessionTabIcon { display: grid; place-items: center; width: 38px; height: 38px; flex: none; border-radius: 11px; background: var(--sunken); color: var(--text-2); }
+.sessionTab.on .sessionTabIcon { background: var(--accent); color: #fff; }
+.primaryTab .sessionTabIcon { background: var(--accent-soft); color: var(--accent-text); }
+.sessionTabText { display: grid; gap: 2px; min-width: 0; }
+.sessionTabText b { font-size: 14px; font-weight: 700; }
+.sessionTabText small { color: var(--text-3); font-size: 12px; line-height: 1.4; }
+
+.transfer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px 12px;
+  margin-bottom: 14px;
+  padding: 14px 16px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: var(--r-lg);
+  background: linear-gradient(120deg, color-mix(in srgb, var(--accent) 9%, var(--surface)), var(--surface) 75%);
+  box-shadow: var(--shadow-sm);
+}
+.transferSide { display: grid; gap: 6px; min-width: 0; }
+.transferLabel { font-size: 11.5px; font-weight: 600; color: var(--text-3); }
+.transferPick { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.transferPick .select { flex: 1; min-width: 0; height: 36px; }
+.transferSwap { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 1px solid var(--border-strong); border-radius: 50%; background: var(--surface); color: var(--accent-text); transition: transform 0.15s, border-color 0.12s; }
+.transferSwap:hover:not(:disabled) { border-color: var(--accent); transform: scaleX(-1); }
+.transferSwap:disabled { opacity: 0.4; }
+.transferGo { height: 36px; padding: 0 18px; }
+.transferHint { grid-column: 1 / -1; color: var(--text-3); font-size: 12px; }
+
+.listBar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 8px; padding: 0 2px; font-size: 12.5px; }
+.listBar .search { flex: 1; min-width: 160px; }
+.search.sm { height: 30px; }
+.exportGroup { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+
 .actionBar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); font-size: 12.5px; }
 .checkLabel { display: inline-flex; align-items: center; gap: 8px; color: var(--text-2); cursor: pointer; }
 
@@ -867,6 +907,9 @@ kbd {
   .ghBtn { width: 34px; padding: 0; justify-content: center; }
   .ghHero { flex-wrap: wrap; }
   .methods { grid-template-columns: 1fr; }
+  .sessionTabs { grid-template-columns: 1fr; }
+  .transfer { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
+  .transferGo { grid-column: 1 / -1; }
   .method { grid-template-columns: auto 1fr; column-gap: 10px; }
   .methodIcon { grid-row: span 2; margin: 0; }
 }

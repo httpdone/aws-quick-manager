@@ -9,7 +9,8 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, Wry};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
-#[tauri::command]
+/// Off the UI thread: it reads the credential store for every account.
+#[tauri::command(async)]
 fn list_accounts() -> Result<Vec<accounts::AccountView>, AppError> {
     accounts::list(&profiles::base_dir(), &vault::dir(), credstore::system().as_ref()).map_err(AppError::from)
 }
@@ -390,14 +391,22 @@ async fn account_usage(id: String) -> Result<api::Usage, AppError> {
         }
     };
     if blob != original {
-        let store = credstore::system();
-        vault::upsert(&vault::dir(), store.as_ref(), &id, &blob).map_err(AppError::from)?;
-        // with the desktop closed, keep its copy in step too; otherwise the
-        // next last_active sync would replace the vault's fresher token
-        if matches!(desktop::find(), Ok(None)) {
+        // file locks, the credential store and a process lookup: all blocking
+        tauri::async_runtime::spawn_blocking(move || -> Result<(), AppError> {
             let store = credstore::system();
-            let _ = switcher::write_desktop_blob(&profiles::base_dir(), store.as_ref(), &id, &blob);
-        }
+            vault::upsert(&vault::dir(), store.as_ref(), &id, &blob)?;
+            // With Quick closed, keep its copy in step too, or the next sync
+            // would put back the older token. Skipped while a switch or
+            // another write to Quick's files is under way.
+            if let Ok(_guard) = switcher::lock_desktop_writes() {
+                if matches!(desktop::find_recent(), Ok(None)) {
+                    let _ = switcher::write_desktop_blob(&profiles::base_dir(), store.as_ref(), &id, &blob);
+                }
+            }
+            Ok(())
+        })
+        .await
+        .map_err(AppError::internal)??;
     }
     Ok(usage)
 }

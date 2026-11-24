@@ -29,6 +29,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 #[cfg(any(windows, target_os = "macos"))]
 use std::process::Command;
+use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -249,14 +250,49 @@ fn processes() -> Result<Vec<Proc>, DesktopError> {
 // ---------- the operations ----------
 
 /// The running desktop, if it is installed and running.
-pub fn find() -> Result<Option<Proc>, DesktopError> {
+fn probe() -> Result<Option<Proc>, DesktopError> {
     let Ok((dir, _)) = installation() else { return Ok(None) };
     Ok(pick_root(&processes()?, &dir, std::process::id()))
 }
 
+/// How long a lookup is good for when only a status is needed.
+const RECENT_TTL: Duration = Duration::from_secs(3);
+
+/// The last lookup and when it was made.
+static RECENT: Mutex<Option<(Instant, Option<Proc>)>> = Mutex::new(None);
+
+fn remember(p: &Option<Proc>) {
+    let mut g = RECENT.lock().unwrap_or_else(|e| e.into_inner());
+    *g = Some((Instant::now(), p.clone()));
+}
+
+/// Look the app up now. Use this before acting on the answer (quitting,
+/// writing Quick's files).
+pub fn find() -> Result<Option<Proc>, DesktopError> {
+    let p = probe()?;
+    remember(&p);
+    Ok(p)
+}
+
+/// Like [`find`], but reuses a lookup from the last few seconds. Each lookup
+/// starts PowerShell on Windows (about a second), so the status poll and
+/// quota reads for many accounts at once share one. Callers that arrive
+/// while a lookup runs wait for it instead of starting their own.
+pub fn find_recent() -> Result<Option<Proc>, DesktopError> {
+    let mut g = RECENT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, p)) = g.as_ref() {
+        if at.elapsed() < RECENT_TTL {
+            return Ok(p.clone());
+        }
+    }
+    let p = probe()?;
+    *g = Some((Instant::now(), p.clone()));
+    Ok(p)
+}
+
 pub fn status() -> Result<Status, DesktopError> {
     let exe = installed_exe();
-    let p = find()?;
+    let p = find_recent()?;
     Ok(Status { installed: exe.is_some(), exe, running: p.is_some(), pid: p.map(|p| p.pid) })
 }
 
