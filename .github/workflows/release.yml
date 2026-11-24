@@ -27,7 +27,8 @@ jobs:
           - platform: windows-latest
             args: "--bundles nsis"
           - platform: macos-latest
-            args: "--bundles dmg"
+            # the app bundle is what the updater installs on macOS
+            args: "--bundles app,dmg"
 
     runs-on: ${{ matrix.platform }}
 
@@ -63,18 +64,21 @@ jobs:
           test "$tag" = "$pkg"
           test "$tag" = "$conf"
 
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # signs the update packages; the app only installs what this key signed
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           releaseName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          releaseBody: |
-            Automated build from ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}.
-
-            Windows: NSIS installer.
-            macOS: Apple Silicon DMG from `macos-latest`.
+          # GitHub's generated notes become the "what's new" in the update dialog
+          generateReleaseNotes: true
           releaseDraft: false
           prerelease: false
+          # latest.json is what the in-app updater reads
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
           tauriScript: pnpm tauri
           args: ${{ matrix.args }}

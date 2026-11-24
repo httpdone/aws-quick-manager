@@ -12,6 +12,7 @@
 //! credential format, to the account vault and to the desktop's credential
 //! store, together with a manifest entry and a fresh profile `device_id`.
 
+use crate::error::AppError;
 use super::api;
 use super::credstore::{self, RawStore};
 use super::device;
@@ -39,8 +40,32 @@ pub enum LoginError {
     Browser(String),
     #[error("登录超时（10 分钟），请重试")]
     Timeout,
+    #[error("OAuth state 不匹配，请重试")]
+    StateMismatch,
+    #[error("登录链接已过期，请重试")]
+    StaleLink,
+    #[error("登录步骤顺序不对，请重新开始")]
+    OutOfOrder,
+    #[error("Amazon 没有完成登录：{0}")]
+    Denied(String),
+    #[error("登录回调里缺少 {0}")]
+    MissingInCallback(&'static str),
+    #[error("登录响应里缺少 {0}")]
+    MissingInResponse(&'static str),
+    #[error("换取令牌失败：{0}")]
+    TokenExchange(String),
+    #[error("读取账号信息失败：{0}")]
+    UserInfo(String),
+    #[error("注册 OIDC 客户端失败：{0}")]
+    RegisterClient(String),
+    #[error("登录状态损坏，请重开应用")]
+    StateBroken,
+    #[error("登录会话已结束")]
+    SessionEnded,
+    #[error("登录的是另一个账号（{0}），这个账号没有更新")]
+    WrongAccount(String),
     #[error("{0}")]
-    Failed(String),
+    Internal(String),
     #[error("这个账号已经添加过：{0}")]
     Exists(String),
     #[error("先生成登录地址")]
@@ -230,13 +255,13 @@ async fn complete_login(
     state: &str,
 ) -> Result<NewAccount, LoginError> {
     if field(query, &["state"]).as_deref() != Some(state) {
-        return Err(LoginError::Failed("OAuth state 不匹配，请重试".into()));
+        return Err(LoginError::StateMismatch);
     }
     if let Some(err) = field(query, &["error"]) {
         let msg = format!("{err} {}", field(query, &["error_description"]).unwrap_or_default()).trim().to_string();
-        return Err(LoginError::Failed(msg));
+        return Err(LoginError::Denied(msg));
     }
-    let code = field(query, &["code"]).ok_or_else(|| LoginError::Failed("回调里没有 code".into()))?;
+    let code = field(query, &["code"]).ok_or_else(|| LoginError::MissingInCallback("code"))?;
     let region = discovery
         .get("idcRegion")
         .or_else(|| discovery.get("idc_region"))
@@ -244,18 +269,18 @@ async fn complete_login(
         .unwrap_or("us-east-1");
     let tokens = api::exchange_code(http, region, &client, &code, redirect_uri, verifier)
         .await
-        .map_err(|e| LoginError::Failed(format!("换取令牌失败：{e}")))?;
+        .map_err(|e| LoginError::TokenExchange(e.to_string()))?;
     if tokens.refresh_token.is_empty() {
-        return Err(LoginError::Failed("令牌响应里没有 refresh_token".into()));
+        return Err(LoginError::MissingInResponse("refresh_token"));
     }
     let info = api::user_info(http, tenant_url, &tokens.access_token)
         .await
-        .map_err(|e| LoginError::Failed(format!("读取账号信息失败：{e}")))?;
+        .map_err(|e| LoginError::UserInfo(e.to_string()))?;
     if info.external_id.is_empty() {
-        return Err(LoginError::Failed("账号信息里没有 external_id，无法生成账号 id".into()));
+        return Err(LoginError::MissingInResponse("external_id"));
     }
     if info.email.is_empty() && info.display_name.is_empty() {
-        return Err(LoginError::Failed("账号信息里没有邮箱或显示名".into()));
+        return Err(LoginError::MissingInResponse("email / display_name"));
     }
 
     let issuer = discovery
@@ -316,7 +341,7 @@ struct ManualSession {
     step: String,
     authorize_url: Option<String>,
     account: Option<LoginOutcome>,
-    error: Option<String>,
+    error: Option<AppError>,
 }
 
 struct ManualHandle {
@@ -332,13 +357,13 @@ pub struct ManualStatus {
     pub step: String,
     pub url: Option<String>,
     pub account: Option<LoginOutcome>,
-    pub error: Option<String>,
+    pub error: Option<AppError>,
 }
 
 fn manual_state() -> Result<Arc<tokio::sync::Mutex<ManualSession>>, LoginError> {
     MANUAL
         .lock()
-        .map_err(|_| LoginError::Failed("登录状态损坏，请重开应用".into()))?
+        .map_err(|_| LoginError::StateBroken)?
         .as_ref()
         .map(|h| h.state.clone())
         .ok_or(LoginError::NoSession)
@@ -378,7 +403,7 @@ pub async fn start_manual() -> Result<String, LoginError> {
     });
     *MANUAL
         .lock()
-        .map_err(|_| LoginError::Failed("登录状态损坏，请重开应用".into()))? = Some(ManualHandle {
+        .map_err(|_| LoginError::StateBroken)? = Some(ManualHandle {
         state: shared,
         tx,
         _stop: stop,
@@ -392,7 +417,7 @@ pub async fn manual_status() -> Result<ManualStatus, LoginError> {
     let mut session = state.lock().await;
     if session.step != "done" && session.step != "failed" && session.started.elapsed() > LOGIN_TIMEOUT {
         session.step = "failed".into();
-        session.error = Some("登录超时（10 分钟），请重新生成登录地址".into());
+        session.error = Some(AppError::from(LoginError::Timeout));
     }
     Ok(ManualStatus {
         step: session.step.clone(),
@@ -407,12 +432,12 @@ pub fn submit_manual(pasted: &str) -> Result<(), LoginError> {
     let query = parse_pasted_query(pasted).ok_or(LoginError::BadPaste)?;
     let tx = MANUAL
         .lock()
-        .map_err(|_| LoginError::Failed("登录状态损坏，请重开应用".into()))?
+        .map_err(|_| LoginError::StateBroken)?
         .as_ref()
         .map(|h| h.tx.clone())
         .ok_or(LoginError::NoSession)?;
     let (reply, _drop) = mpsc::channel();
-    tx.send(Callback { query, reply }).map_err(|_| LoginError::Failed("登录会话已结束".into()))?;
+    tx.send(Callback { query, reply }).map_err(|_| LoginError::SessionEnded)?;
     Ok(())
 }
 
@@ -424,7 +449,7 @@ async fn commit_account(base: &Path, vault_dir: &Path, account: NewAccount) -> R
         commit(&base, store.as_ref(), &vault_dir, account)
     })
     .await
-    .map_err(|e| LoginError::Failed(e.to_string()))?
+    .map_err(|e| LoginError::Internal(e.to_string()))?
 }
 
 async fn handle_manual(callback: Callback, state: Arc<tokio::sync::Mutex<ManualSession>>, base: &Path, vault_dir: &Path) {
@@ -437,7 +462,7 @@ async fn handle_manual(callback: Callback, state: Arc<tokio::sync::Mutex<ManualS
             {
                 let mut session = state.lock().await;
                 session.step = "failed".into();
-                session.error = Some(message.clone());
+                session.error = Some(AppError::from(e));
             }
             let _ = callback.reply.send(html(400, &message));
         }
@@ -468,17 +493,17 @@ async fn advance_manual(
         }
         if let Some(err) = field(query, &["error"]) {
             let msg = format!("{err} {}", field(query, &["error_description"]).unwrap_or_default()).trim().to_string();
-            return Err(LoginError::Failed(msg));
+            return Err(LoginError::Denied(msg));
         }
         let issuer = field(query, &["issuerUrl", "issuer_url"]).unwrap_or_default();
         if issuer.is_empty() {
-            return Err(LoginError::Failed("地址里没有 issuerUrl".into()));
+            return Err(LoginError::MissingInCallback("issuerUrl"));
         }
         let tenant_url = field(query, &["tenantUrl", "tenant_url"]).unwrap_or_default();
         let region = field(query, &["idcRegion", "idc_region"]).unwrap_or_else(|| "us-east-1".into());
         let registered = api::register_client(&api::client(), &region, &issuer, &redirect_uri)
             .await
-            .map_err(|e| LoginError::Failed(format!("注册 OIDC 客户端失败：{e}")))?;
+            .map_err(|e| LoginError::RegisterClient(e.to_string()))?;
         let authorize = api::authorize_url(&region, &registered.client_id, &redirect_uri, &oauth_state, &challenge(&verifier));
         {
             let mut session = state.lock().await;
@@ -500,11 +525,11 @@ async fn advance_manual(
             let client = session
                 .client
                 .take()
-                .ok_or_else(|| LoginError::Failed("还没有授权地址，请先完成第一步".into()))?;
+                .ok_or_else(|| LoginError::OutOfOrder)?;
             let discovery = session
                 .discovery
                 .clone()
-                .ok_or_else(|| LoginError::Failed("缺少身份中心信息，请重新生成登录地址".into()))?;
+                .ok_or_else(|| LoginError::OutOfOrder)?;
             (
                 session.state.clone(),
                 session.verifier.clone(),
@@ -559,7 +584,7 @@ pub async fn login() -> Result<NewAccount, LoginError> {
     loop {
         let callback = match tokio::time::timeout_at(deadline, rx.recv()).await {
             Ok(Some(c)) => c,
-            Ok(None) => return Err(LoginError::Failed("回调服务已停止".into())),
+            Ok(None) => return Err(LoginError::SessionEnded),
             Err(_) => return Err(LoginError::Timeout),
         };
 
@@ -568,25 +593,25 @@ pub async fn login() -> Result<NewAccount, LoginError> {
             // the browser on to the OIDC authorize page.
             if field(&callback.query, &["nonce"]).as_deref() != Some(nonce.as_str()) {
                 let _ = callback.reply.send(html(400, "This sign-in link is stale. Start the login again from the app."));
-                return Err(LoginError::Failed("登录链接已过期，请重试".into()));
+                return Err(LoginError::StaleLink);
             }
             if let Some(err) = field(&callback.query, &["error"]) {
                 let msg = format!("{err} {}", field(&callback.query, &["error_description"]).unwrap_or_default()).trim().to_string();
                 let _ = callback.reply.send(html(400, "Amazon did not complete the sign-in."));
-                return Err(LoginError::Failed(msg));
+                return Err(LoginError::Denied(msg));
             }
             let issuer = field(&callback.query, &["issuerUrl", "issuer_url"]).unwrap_or_default();
             let tenant = field(&callback.query, &["tenantUrl", "tenant_url"]).unwrap_or_default();
             let region = field(&callback.query, &["idcRegion", "idc_region"]).unwrap_or_else(|| "us-east-1".into());
             if issuer.is_empty() {
                 let _ = callback.reply.send(html(400, "Amazon did not return an identity center."));
-                return Err(LoginError::Failed("登录回调里没有 issuerUrl".into()));
+                return Err(LoginError::MissingInCallback("issuerUrl"));
             }
             let registered = match api::register_client(&http, &region, &issuer, &redirect_uri).await {
                 Ok(c) => c,
                 Err(e) => {
                     let _ = callback.reply.send(html(500, "Could not register the sign-in client."));
-                    return Err(LoginError::Failed(format!("注册 OIDC 客户端失败：{e}")));
+                    return Err(LoginError::RegisterClient(e.to_string()));
                 }
             };
             let authorize = api::authorize_url(&region, &registered.client_id, &redirect_uri, &state, &computed);
@@ -601,7 +626,7 @@ pub async fn login() -> Result<NewAccount, LoginError> {
             let reply = callback.reply;
             let (Some(client), Some(discovery)) = (client.take(), discovery.as_ref()) else {
                 let _ = reply.send(html(400, "This sign-in is out of order. Start again from the app."));
-                return Err(LoginError::Failed("登录流程顺序不对，请重试".into()));
+                return Err(LoginError::OutOfOrder);
             };
             let result = complete_login(&http, &callback.query, client, discovery, &tenant_url, &redirect_uri, &verifier, &state).await;
             let _ = reply.send(match &result {
@@ -613,6 +638,20 @@ pub async fn login() -> Result<NewAccount, LoginError> {
 
         let _ = callback.reply.send(html(200, "Finish the Amazon sign-in in the tab that just opened. This page only confirms the result."));
     }
+}
+
+/// Replace the stored sign-in of an account the user signed in to again.
+/// The browser sign-in must land on the same account (the id comes from the
+/// account's external id). Returns the new credential blob for the caller to
+/// hand to Quick as well. The vault write clears the account's flag.
+pub fn relogin_commit(store: &dyn RawStore, vault_dir: &Path, expected: &str, account: NewAccount) -> Result<(LoginOutcome, String), LoginError> {
+    if account.id != expected {
+        let who = if account.email.is_empty() { account.display_name } else { account.email };
+        return Err(LoginError::WrongAccount(who));
+    }
+    vault::upsert(vault_dir, store, &account.id, &account.blob)?;
+    let outcome = LoginOutcome { id: account.id, email: account.email, display_name: account.display_name };
+    Ok((outcome, account.blob))
 }
 
 /// Save the new account in the vault only. The desktop is not touched:

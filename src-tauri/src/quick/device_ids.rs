@@ -80,7 +80,14 @@ pub struct BaseIdentity {
 pub struct DeviceOverview {
     pub accounts: Vec<DeviceAccount>,
     pub base: BaseIdentity,
-    pub conflicts: Vec<String>,
+    pub conflicts: Vec<IdConflict>,
+}
+
+/// An id more than one account uses. `kind` is `device`, `config` or `space`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct IdConflict {
+    pub kind: &'static str,
+    pub id: String,
 }
 
 fn read_trim(path: &Path) -> io::Result<String> {
@@ -118,10 +125,10 @@ fn write_base(base: &Path, config: &str, space: &str) -> io::Result<()> {
         write_text(&base.join("device_space_id"), space)?;
     }
     if read_trim(&base.join("device_configuration_id"))? != config {
-        return Err(io::Error::other("安装 ID 写入后读回不一致"));
+        return Err(io::Error::other("device_configuration_id read-back mismatch"));
     }
     if read_trim(&base.join("device_space_id"))? != space {
-        return Err(io::Error::other("space ID 写入后读回不一致"));
+        return Err(io::Error::other("device_space_id read-back mismatch"));
     }
     Ok(())
 }
@@ -241,17 +248,17 @@ pub fn overview(base: &Path, vault_dir: &Path, store: &dyn RawStore) -> io::Resu
     let mut conflicts = Vec::new();
     for (id, accounts) in device_ids {
         if accounts.len() > 1 {
-            conflicts.push(format!("设备 ID {id}"));
+            conflicts.push(IdConflict { kind: "device", id: id.to_string() });
         }
     }
     for (id, accounts) in configs {
         if accounts.len() > 1 {
-            conflicts.push(format!("安装 ID {id}"));
+            conflicts.push(IdConflict { kind: "config", id: id.to_string() });
         }
     }
     for (id, accounts) in spaces {
         if accounts.len() > 1 {
-            conflicts.push(format!("space {id}"));
+            conflicts.push(IdConflict { kind: "space", id: id.to_string() });
         }
     }
     conflicts.sort();
@@ -406,7 +413,7 @@ pub fn replace_account(base: &Path, vault_dir: &Path, id: &str) -> Result<Device
         let dir = device::profile_dir(base, p);
         device::write_id(&dir, &next_device)?;
         if device::read(&dir).as_deref() != Some(next_device.as_str()) {
-            return Err(DeviceIdError::Io(io::Error::other("设备 ID 写入后读回不一致")));
+            return Err(DeviceIdError::Io(io::Error::other("device_id read-back mismatch")));
         }
     }
     if active {
@@ -455,7 +462,7 @@ pub fn restore_account(base: &Path, vault_dir: &Path, id: &str, target: &Identit
         let dir = device::profile_dir(base, p);
         device::write_id(&dir, &target.device_id)?;
         if device::read(&dir).as_deref() != Some(target.device_id.as_str()) {
-            return Err(DeviceIdError::Io(io::Error::other("设备 ID 写入后读回不一致")));
+            return Err(DeviceIdError::Io(io::Error::other("device_id read-back mismatch")));
         }
     }
     if active {

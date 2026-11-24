@@ -10,6 +10,7 @@
 
 use super::credstore::{self, CredError, RawStore};
 use super::device;
+use super::fsutil::{self, FileLock};
 use super::profiles;
 use super::switcher;
 use serde::{Deserialize, Serialize};
@@ -129,13 +130,26 @@ fn read_index(dir: &Path) -> io::Result<Index> {
     }
 }
 
-/// Write the index atomically (temp file + rename).
+/// Write the index atomically (unique temp file + rename). Callers that
+/// read, change and write it back hold [`lock`] for the whole round trip.
 fn write_index(dir: &Path, index: &Index) -> io::Result<()> {
-    fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!("{INDEX_FILE}.tmp"));
     let text = serde_json::to_string_pretty(index).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    fs::write(&tmp, text + "\n")?;
-    fs::rename(tmp, index_path(dir))
+    fsutil::atomic_write(&index_path(dir), (text + "\n").as_bytes())
+}
+
+/// Held by every read-change-write of the index, so quota reads running in
+/// parallel (and `aqm`) never overwrite each other's changes. None of the
+/// functions that take it call another one that does.
+fn lock(dir: &Path) -> io::Result<FileLock> {
+    FileLock::acquire(&dir.join(format!("{INDEX_FILE}.lock")))
+}
+
+/// The refresh token in a credential blob, "" when there is none.
+fn refresh_token_of(blob: &str) -> String {
+    serde_json::from_str::<Value>(blob)
+        .ok()
+        .and_then(|v| v.get("refresh_token").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_default()
 }
 
 /// Every account in the vault index.
@@ -159,7 +173,7 @@ fn field(v: &Value, k: &str) -> String {
 
 /// Insert or refresh `id`'s index entry from `blob`, keeping `added_at`
 /// and unknown fields of an existing entry.
-fn upsert_entry(index: &mut Index, id: &str, blob: &str, now: &str) {
+fn upsert_entry(index: &mut Index, id: &str, blob: &str, now: &str, clear_flag: bool) {
     let v: Value = serde_json::from_str(blob).unwrap_or(Value::Null);
     let (email, display_name, role, aws_account_id, tenant_url) =
         (field(&v, "email"), field(&v, "display_name"), field(&v, "role"), field(&v, "aws_account_id"), field(&v, "tenant_url"));
@@ -172,7 +186,9 @@ fn upsert_entry(index: &mut Index, id: &str, blob: &str, now: &str) {
             e.aws_account_id = aws_account_id;
             e.tenant_url = tenant_url;
             e.last_synced_at = now.into();
-            e.flag = None;
+            if clear_flag {
+                e.flag = None;
+            }
         }
         None => index.accounts.push(VaultEntry {
             id: id.into(),
@@ -196,9 +212,10 @@ fn upsert_entry(index: &mut Index, id: &str, blob: &str, now: &str) {
 /// Write `blob` (the desktop-format credential JSON) as the account's
 /// vault secret, verbatim, and upsert its index entry.
 pub fn upsert(dir: &Path, store: &dyn RawStore, id: &str, blob: &str) -> Result<(), VaultError> {
+    let _lock = lock(dir)?;
     credstore::write_session_text(store, &secret_target(id), blob)?;
     let mut index = read_index(dir)?;
-    upsert_entry(&mut index, id, blob, &chrono::Utc::now().to_rfc3339());
+    upsert_entry(&mut index, id, blob, &chrono::Utc::now().to_rfc3339(), true);
     write_index(dir, &index)?;
     Ok(())
 }
@@ -212,6 +229,7 @@ pub fn entry(dir: &Path, id: &str) -> io::Result<Option<VaultEntry>> {
 /// import in the add-account dialog: the user picked this account explicitly,
 /// so the desktop copy replaces whatever the vault had.
 pub fn import_one(base: &Path, store: &dyn RawStore, vault_dir: &Path, id: &str) -> Result<bool, VaultError> {
+    let _lock = lock(vault_dir)?;
     let manifest = profiles::read(base)?;
     let Some(profile) = manifest.entries.iter().find(|e| e.id == id) else {
         return Ok(false);
@@ -222,7 +240,7 @@ pub fn import_one(base: &Path, store: &dyn RawStore, vault_dir: &Path, id: &str)
     };
     credstore::write_session_text(store, &secret_target(id), &blob)?;
     let mut index = read_index(vault_dir)?;
-    upsert_entry(&mut index, id, &blob, &chrono::Utc::now().to_rfc3339());
+    upsert_entry(&mut index, id, &blob, &chrono::Utc::now().to_rfc3339(), true);
     if manifest.last_active.as_deref() == Some(id) {
         let (config, space) = base_identity(base);
         if !config.is_empty() {
@@ -245,6 +263,7 @@ pub fn import_one(base: &Path, store: &dyn RawStore, vault_dir: &Path, id: &str)
 
 /// Record or clear an account's status flag (`auth_invalid`, …).
 pub fn set_flag(dir: &Path, id: &str, flag: Option<&str>) -> io::Result<()> {
+    let _lock = lock(dir)?;
     let mut index = read_index(dir)?;
     if let Some(e) = index.accounts.iter_mut().find(|e| e.id == id) {
         e.flag = flag.map(str::to_string);
@@ -256,6 +275,7 @@ pub fn set_flag(dir: &Path, id: &str, flag: Option<&str>) -> io::Result<()> {
 /// Set the install-level ids without touching history; used when adopting the
 /// base pair or importing an account.
 pub fn set_identity(dir: &Path, id: &str, device_id: &str, config: &str, space: &str) -> io::Result<()> {
+    let _lock = lock(dir)?;
     let mut index = read_index(dir)?;
     if let Some(e) = index.accounts.iter_mut().find(|e| e.id == id) {
         if e.device_id != device_id || e.device_configuration_id != config || e.device_space_id != space {
@@ -278,6 +298,7 @@ pub fn record_identity_change(
     space: &str,
     now: &str,
 ) -> io::Result<()> {
+    let _lock = lock(dir)?;
     let mut index = read_index(dir)?;
     if let Some(e) = index.accounts.iter_mut().find(|e| e.id == id) {
         let changed = e.device_id != device_id || e.device_configuration_id != config || e.device_space_id != space;
@@ -310,6 +331,7 @@ pub fn record_identity_change(
 
 /// Keep the vault's copy of the profile's device id in step with the file.
 pub fn set_device_id(dir: &Path, id: &str, device_id: &str) -> io::Result<()> {
+    let _lock = lock(dir)?;
     let mut index = read_index(dir)?;
     if let Some(e) = index.accounts.iter_mut().find(|e| e.id == id) {
         if e.device_id != device_id {
@@ -323,6 +345,7 @@ pub fn set_device_id(dir: &Path, id: &str, device_id: &str) -> io::Result<()> {
 /// Drop the account from the vault: its index entry and every
 /// credential-store entry it created (main, chunks, twin).
 pub fn remove(dir: &Path, store: &dyn RawStore, id: &str) -> Result<(), VaultError> {
+    let _lock = lock(dir)?;
     let mut index = read_index(dir)?;
     let before = index.accounts.len();
     index.accounts.retain(|e| e.id != id);
@@ -357,6 +380,7 @@ fn blob_expiry(blob: &str) -> f64 {
 /// credentials are skipped and never touch the vault copy. Nothing is
 /// written to the desktop's files or credentials.
 pub fn import_from_desktop(base: &Path, store: &dyn RawStore, vault_dir: &Path) -> Result<ImportReport, VaultError> {
+    let _lock = lock(vault_dir)?;
     let manifest = profiles::read(base)?;
     let mut index = read_index(vault_dir)?;
     let mut report = ImportReport::default();
@@ -400,7 +424,12 @@ pub fn import_from_desktop(base: &Path, store: &dyn RawStore, vault_dir: &Path) 
 
         if desktop_wins {
             credstore::write_session_text(store, &secret_target(id), &blob)?;
-            upsert_entry(&mut index, id, &blob, &now);
+            // A later expiry alone doesn't mean the login works again: keep a
+            // rejected-login flag while Quick still holds the same refresh
+            // token, and clear it once Quick has a new login.
+            let token = refresh_token_of(&blob);
+            let same_login = !token.is_empty() && vault_blob.as_deref().is_some_and(|vb| refresh_token_of(vb) == token);
+            upsert_entry(&mut index, id, &blob, &now, !same_login);
             if existing.is_some() {
                 report.updated.push(id.into());
             } else {
@@ -673,5 +702,61 @@ mod tests {
         let vault_sha = hex::encode(Sha256::digest(vault_blob.as_bytes()));
         println!("{id}: blob sha256 match={}", desk_sha == vault_sha);
         assert_eq!(desk_sha, vault_sha);
+    }
+
+    #[test]
+    fn parallel_index_writes_are_not_lost() {
+        let dir = temp("parallel");
+        let mut index = Index { version: 1, ..Default::default() };
+        for i in 0..16 {
+            index.accounts.push(VaultEntry { id: format!("social-{i}"), ..Default::default() });
+        }
+        write_index(&dir, &index).unwrap();
+        let handles: Vec<_> = (0..16)
+            .map(|i| {
+                let dir = dir.clone();
+                std::thread::spawn(move || set_device_id(&dir, &format!("social-{i}"), &format!("dev-{i}")).unwrap())
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        let back = read_index(&dir).unwrap();
+        for i in 0..16 {
+            assert_eq!(back.accounts[i].device_id, format!("dev-{i}"));
+        }
+        let leftovers: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sync_keeps_a_rejected_login_flag_until_quick_has_a_new_login() {
+        let dir = temp("flag");
+        let base = temp("flag-base");
+        let s = MemStore::default();
+        let e = entry("social-a");
+        upsert(&dir, &s, "social-a", &blob("a", 100.0)).unwrap();
+        set_flag(&dir, "social-a", Some("auth_invalid")).unwrap();
+        profiles::write(&base, &manifest(vec![e.clone()], None)).unwrap();
+        let flag = || read_index(&dir).unwrap().accounts[0].flag.clone();
+
+        // same refresh token with a later expiry: still the rejected login
+        desktop_cred(&s, &e, &blob("a", 200.0));
+        import_from_desktop(&base, &s, &dir).unwrap();
+        assert_eq!(flag().as_deref(), Some("auth_invalid"));
+
+        // the user signed in again inside Quick: a new refresh token
+        desktop_cred(&s, &e, &blob("a", 300.0).replace("rt-a", "rt-a2"));
+        import_from_desktop(&base, &s, &dir).unwrap();
+        assert_eq!(flag(), None);
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&base);
     }
 }

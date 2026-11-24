@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useT } from "../i18n";
+import { errorText } from "../lib/errors";
 import { Account, AccountDetails, accountDetails } from "../lib/api";
 import { fmtDate, fmtRelative, fmtTime, hue } from "../lib/format";
 import { accountStatus, canSwitch, who } from "../lib/status";
@@ -25,7 +26,7 @@ export default function AccountDetailsDialog({ account, onClose, onSwitch, onDel
     setLoading(true);
     accountDetails(account.id)
       .then((d) => alive && setDetails(d))
-      .catch((e) => alive && setError(String(e)))
+      .catch((e) => alive && setError(errorText(t, e)))
       .finally(() => alive && setLoading(false));
     return () => {
       alive = false;

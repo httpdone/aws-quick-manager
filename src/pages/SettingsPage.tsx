@@ -1,8 +1,10 @@
 import { ReactNode, useEffect, useState } from "react";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { AppInfo, DesktopStatus, UpdateInfo, autostartEnabled, checkForUpdate, setAutostart } from "../lib/api";
+import { AppInfo, DesktopStatus, autostartEnabled, setAutostart } from "../lib/api";
+import { ISSUES_URL, REPO_URL, Updates } from "../lib/updates";
 import { Theme, getLaunchAfterSwitch, getTheme, setLaunchAfterSwitch, setTheme } from "../lib/prefs";
 import { LangPref, Messages, useI18n, useT } from "../i18n";
+import { errorText } from "../lib/errors";
 import Icon from "../components/Icon";
 import { CopyButton, Segmented, Toggle, useUI } from "../components/ui";
 
@@ -10,6 +12,8 @@ interface Props {
   info: AppInfo | null;
   desktop: DesktopStatus | null;
   onRefreshDesktop: () => void;
+  updates: Updates;
+  onOpenUpdate: () => void;
 }
 
 type Shortcut = keyof Messages["settings"]["shortcutList"];
@@ -22,7 +26,7 @@ const SHORTCUTS: [string, Shortcut][] = [
   ["Esc", "escape"],
 ];
 
-export default function SettingsPage({ info, desktop, onRefreshDesktop }: Props) {
+export default function SettingsPage({ info, desktop, onRefreshDesktop, updates, onOpenUpdate }: Props) {
   const { toast } = useUI();
   const { t, pref: lang, setPref: setLang } = useI18n();
   const [theme, setThemeState] = useState<Theme>(getTheme);
@@ -53,13 +57,13 @@ export default function SettingsPage({ info, desktop, onRefreshDesktop }: Props)
       setAutostartState(on);
       toast(on ? t.settings.autostartOn : t.settings.autostartOff);
     } catch (e) {
-      toast(String(e), "bad");
+      toast(errorText(t, e), "bad");
     } finally {
       setSaving(false);
     }
   };
 
-  const reveal = (path: string) => revealItemInDir(path).catch((e) => toast(String(e), "bad"));
+  const reveal = (path: string) => revealItemInDir(path).catch((e) => toast(errorText(t, e), "bad"));
 
   return (
     <div className="page narrow">
@@ -68,6 +72,8 @@ export default function SettingsPage({ info, desktop, onRefreshDesktop }: Props)
           <h1>{t.settings.title}</h1>
         </div>
       </header>
+
+      <AboutPanel version={info?.version} updates={updates} onOpenUpdate={onOpenUpdate} />
 
       <section className="panel">
         <h2>{t.settings.general}</h2>
@@ -137,64 +143,77 @@ export default function SettingsPage({ info, desktop, onRefreshDesktop }: Props)
         </ul>
       </section>
 
-      <AboutUpdates />
-
       <p className="about">
         AWS Quick Manager {info ? `v${info.version}` : ""} · {t.settings.about} · MIT
-        {" · "}
-        <a href="https://github.com/httpdone/aws-quick-manager" target="_blank" rel="noopener noreferrer">
-          {t.settings.github}
-        </a>
       </p>
     </div>
   );
 }
 
-type UpdateState =
-  | { status: "idle" | "checking" }
-  | { status: "done"; info: UpdateInfo }
-  | { status: "error"; reason: string };
-
-function AboutUpdates() {
+function AboutPanel({ version, updates, onOpenUpdate }: { version?: string; updates: Updates; onOpenUpdate: () => void }) {
   const { toast } = useUI();
   const t = useT();
-  const [update, setUpdate] = useState<UpdateState>({ status: "idle" });
+  const { update, status, error, check } = updates;
+  const available = !!update;
+  const open = (url: string) => openUrl(url).catch((e) => toast(errorText(t, e), "bad"));
 
-  const check = async () => {
-    setUpdate({ status: "checking" });
-    try {
-      setUpdate({ status: "done", info: await checkForUpdate() });
-    } catch (e) {
-      setUpdate({ status: "error", reason: String(e) });
-    }
+  const text =
+    status === "checking"
+      ? t.settings.checking
+      : status === "error"
+        ? t.settings.updateFailed(errorText(t, error))
+        : update
+          ? t.settings.updateAvailable(update.version)
+          : status === "done" && version
+            ? t.settings.upToDate(version)
+            : version
+            ? t.settings.currentVersion(version)
+            : "";
+
+  const manualCheck = async () => {
+    const next = await check();
+    if (next) onOpenUpdate();
   };
 
-  const result = update.status === "done" ? update.info : null;
-  const status = result
-    ? result.update_available
-      ? t.settings.updateAvailable(result.latest)
-      : t.settings.upToDate(result.current)
-    : update.status === "error"
-      ? t.settings.updateFailed(update.reason)
-      : update.status === "checking" ? t.settings.checking : "";
-
   return (
-    <section className="panel">
-      <h2>{t.settings.aboutTitle}</h2>
+    <section className="panel ghCard">
+      <div className="ghHero">
+        <span className="ghLogo">
+          <Icon name="github" size={26} />
+        </span>
+        <div className="ghText">
+          <b>httpdone/aws-quick-manager</b>
+          <small>{t.settings.githubDesc}</small>
+        </div>
+        <div className="actions">
+          <button className="btn primary" onClick={() => open(REPO_URL)}>
+            <Icon name="github" size={14} />
+            {t.settings.openGithub}
+          </button>
+          <button className="btn" onClick={() => open(ISSUES_URL)}>
+            <Icon name="alert" size={14} />
+            {t.settings.reportIssue}
+          </button>
+        </div>
+      </div>
       <div className="settingRow">
         <div>
           <b>{t.settings.updates}</b>
-          <small role="status">{status}</small>
+          <small role="status" className={available ? "okText" : undefined}>
+            {text}
+          </small>
         </div>
         <div className="actions">
-          <button className="btn sm" onClick={check} disabled={update.status === "checking"}>
-            {t.settings.checkUpdates}
-          </button>
-          {result?.update_available && (
-            <button className="btn sm" onClick={() => openUrl(result.release_url).catch((e) => toast(String(e), "bad"))}>
-              {t.settings.openRelease}
+          {available && (
+            <button className="btn primary sm" onClick={onOpenUpdate}>
+              <Icon name="download" size={13} />
+              {t.settings.viewUpdate}
             </button>
           )}
+          <button className="btn sm" onClick={manualCheck} disabled={status === "checking"}>
+            <Icon name="refresh" size={13} className={status === "checking" ? "spin" : undefined} />
+            {t.settings.checkUpdates}
+          </button>
         </div>
       </div>
     </section>

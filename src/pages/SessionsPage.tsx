@@ -11,6 +11,7 @@ import {
   listSessions,
 } from "../lib/api";
 import { useT } from "../i18n";
+import { errorText } from "../lib/errors";
 import { fmtRelative, fmtDate } from "../lib/format";
 import { who } from "../lib/status";
 import Icon from "../components/Icon";
@@ -79,7 +80,7 @@ export default function SessionsPage({ accounts }: Props) {
       }
     } catch (e) {
       setSessions([]);
-      setError(String(e));
+      setError(errorText(t, e));
     } finally {
       setLoading(false);
     }
@@ -121,10 +122,10 @@ export default function SessionsPage({ accounts }: Props) {
       const count = "events" in result ? result.events : result.messages;
       toast(t.sessions.exported(result.sessions, count, source === "cloud"), "ok", {
         label: t.common.revealInFolder,
-        run: () => revealItemInDir(result.path).catch((e) => toast(String(e), "bad")),
+        run: () => revealItemInDir(result.path).catch((e) => toast(errorText(t, e), "bad")),
       });
     } catch (e) {
-      toast(t.sessions.exportFailed(String(e)), "bad");
+      toast(t.sessions.exportFailed(errorText(t, e)), "bad");
     } finally {
       setBusy(false);
     }
@@ -145,7 +146,7 @@ export default function SessionsPage({ accounts }: Props) {
       toast(t.sessions.copied(result.length, who(target)));
       setSelected(new Set());
     } catch (e) {
-      toast(t.sessions.copyFailed(String(e)), "bad");
+      toast(t.sessions.copyFailed(errorText(t, e)), "bad");
     } finally {
       setBusy(false);
     }

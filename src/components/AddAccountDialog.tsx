@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Account, importDesktopAccount, loginAccount, manualLoginStart, manualLoginStatus, manualLoginSubmit } from "../lib/api";
 import { useT } from "../i18n";
+import { errorText } from "../lib/errors";
 import { hue } from "../lib/format";
 import { who } from "../lib/status";
 import Icon, { IconName } from "./Icon";
@@ -53,7 +54,7 @@ export default function AddAccountDialog({ accounts, onClose, onDone }: Props) {
       const r = await loginAccount();
       onDone(t.add.added(r.email || r.display_name));
     } catch (e) {
-      setError(String(e));
+      setError(errorText(t, e));
     } finally {
       setBusy(false);
     }
@@ -69,7 +70,7 @@ export default function AddAccountDialog({ accounts, onClose, onDone }: Props) {
         if (await importDesktopAccount(id)) done += 1;
         else failed.push(id);
       } catch (e) {
-        failed.push(`${id}: ${String(e)}`);
+        failed.push(`${id}: ${errorText(t, e)}`);
       }
     }
     setBusy(false);
@@ -90,7 +91,7 @@ export default function AddAccountDialog({ accounts, onClose, onDone }: Props) {
       setAuthorizeUrl("");
       setPasted("");
     } catch (e) {
-      setError(String(e));
+      setError(errorText(t, e));
     } finally {
       setBusy(false);
     }
@@ -105,7 +106,7 @@ export default function AddAccountDialog({ accounts, onClose, onDone }: Props) {
       await manualLoginSubmit(text);
       setPasted("");
     } catch (e) {
-      setError(String(e));
+      setError(errorText(t, e));
     } finally {
       setBusy(false);
     }
@@ -120,13 +121,13 @@ export default function AddAccountDialog({ accounts, onClose, onDone }: Props) {
         const status = await manualLoginStatus();
         if (!alive) return;
         if (status.url) setAuthorizeUrl(status.url);
-        if (status.error) setError(status.error);
+        if (status.error) setError(errorText(t, status.error));
         if (status.step === "done" && status.account) {
           alive = false;
           onDone(t.add.added(status.account.email || status.account.display_name));
         }
       } catch (e) {
-        if (alive) setError(String(e));
+        if (alive) setError(errorText(t, e));
       }
     };
     const timer = window.setInterval(check, 1000);
@@ -137,7 +138,7 @@ export default function AddAccountDialog({ accounts, onClose, onDone }: Props) {
     };
   }, [method, manualUrl, onDone]);
 
-  const open = (url: string) => openUrl(url).catch((e) => setError(String(e)));
+  const open = (url: string) => openUrl(url).catch((e) => setError(errorText(t, e)));
 
   const footer = (
     <>

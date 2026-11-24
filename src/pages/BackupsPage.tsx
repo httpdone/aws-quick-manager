@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { BackupInfo, backupNow, deleteBackup, listBackups, restoreBackup } from "../lib/api";
 import { useT } from "../i18n";
+import { errorText } from "../lib/errors";
 import { fmtDate, fmtRelative } from "../lib/format";
 import Icon from "../components/Icon";
 import { Alert, Empty, Spinner, cx, useUI } from "../components/ui";
@@ -20,7 +21,7 @@ export default function BackupsPage({ desktopRunning, onRestored }: Props) {
     try {
       setBackups(await listBackups());
     } catch (e) {
-      toast(String(e), "bad");
+      toast(errorText(t, e), "bad");
       setBackups((prev) => prev ?? []);
     }
   }, [toast]);
@@ -35,7 +36,7 @@ export default function BackupsPage({ desktopRunning, onRestored }: Props) {
       toast(await action());
       await load();
     } catch (e) {
-      toast(String(e), "bad");
+      toast(errorText(t, e), "bad");
     } finally {
       setBusy(null);
     }
@@ -128,7 +129,7 @@ export default function BackupsPage({ desktopRunning, onRestored }: Props) {
                   </div>
                 </div>
                 {b.parse_error ? (
-                  <p className="badText">{b.parse_error}</p>
+                  <p className="badText">{t.backups.parseError}</p>
                 ) : (
                   <>
                     <div className="tlChips">

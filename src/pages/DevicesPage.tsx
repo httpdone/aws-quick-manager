@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import { DeviceAccount, DeviceOverview, IdentityChange, deviceOverview, replaceAccountDevice, restoreAccountDevice } from "../lib/api";
+import { DeviceAccount, DeviceOverview, IdConflict, IdentityChange, deviceOverview, replaceAccountDevice, restoreAccountDevice } from "../lib/api";
 import { useT } from "../i18n";
+import { errorText } from "../lib/errors";
 import { fmtTime, hue } from "../lib/format";
 import { who } from "../lib/status";
 import Icon from "../components/Icon";
 import { Alert, Avatar, CopyButton, Empty, Field, StatusPill, cx, useUI } from "../components/ui";
+
+const KIND_LABEL: Record<IdConflict["kind"], string> = { device: "device_id", config: "configuration", space: "space" };
+const conflictLabel = (c: IdConflict) => `${KIND_LABEL[c.kind]} ${c.id}`;
 
 interface Props {
   desktopRunning: boolean;
@@ -26,7 +30,7 @@ export default function DevicesPage({ desktopRunning, onChanged }: Props) {
       setData(await deviceOverview());
       setError("");
     } catch (e) {
-      setError(String(e));
+      setError(errorText(t, e));
     } finally {
       setLoading(false);
     }
@@ -43,7 +47,7 @@ export default function DevicesPage({ desktopRunning, onChanged }: Props) {
       await load();
       onChanged();
     } catch (e) {
-      toast(String(e), "bad");
+      toast(errorText(t, e), "bad");
     } finally {
       setBusy(false);
     }
@@ -99,7 +103,7 @@ export default function DevicesPage({ desktopRunning, onChanged }: Props) {
       {data && data.conflicts.length > 0 && (
         <Alert tone="bad">
           <b>{t.devices.sharedIds}</b>
-          <p className="mono">{data.conflicts.join("、")}</p>
+          <p className="mono">{data.conflicts.map(conflictLabel).join(t.common.listSep)}</p>
         </Alert>
       )}
 
@@ -124,10 +128,9 @@ export default function DevicesPage({ desktopRunning, onChanged }: Props) {
       {data && data.accounts.length > 0 && (
         <ul className="devices">
           {data.accounts.map((a) => {
-            const conflict =
-              data.conflicts.includes(`设备 ID ${a.device_id}`) ||
-              data.conflicts.includes(`安装 ID ${a.config}`) ||
-              data.conflicts.includes(`space ${a.space}`);
+            const conflict = data.conflicts.some(
+              (c) => (c.kind === "device" && c.id === a.device_id) || (c.kind === "config" && c.id === a.config) || (c.kind === "space" && c.id === a.space),
+            );
             const ready = !!a.device_id && !!a.config && a.space_matches_config;
             const expanded = open === a.id;
             return (

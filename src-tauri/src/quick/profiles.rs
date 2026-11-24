@@ -83,12 +83,8 @@ pub fn read(base: &Path) -> io::Result<Manifest> {
 /// Write the manifest atomically (temp file + rename).
 #[allow(dead_code)]
 pub fn write(base: &Path, manifest: &Manifest) -> io::Result<()> {
-    fs::create_dir_all(base)?;
-    let path = base.join(MANIFEST_FILE);
-    let tmp = base.join(format!("{MANIFEST_FILE}.tmp"));
     let text = serde_json::to_string_pretty(manifest).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    fs::write(&tmp, text + "\n")?;
-    fs::rename(tmp, path)
+    super::fsutil::atomic_write(&base.join(MANIFEST_FILE), (text + "\n").as_bytes())
 }
 
 #[cfg(test)]

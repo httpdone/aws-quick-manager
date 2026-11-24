@@ -1,6 +1,8 @@
+pub mod error;
 pub mod quick;
 mod updates;
 
+use error::AppError;
 use quick::{accounts, api, credstore, desktop, device_ids, manage, oauth, profiles, switcher, vault};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -8,69 +10,73 @@ use tauri::{Emitter, Manager, Wry};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 #[tauri::command]
-fn list_accounts() -> Result<Vec<accounts::AccountView>, String> {
-    accounts::list(&profiles::base_dir(), &vault::dir(), credstore::system().as_ref()).map_err(|e| e.to_string())
+fn list_accounts() -> Result<Vec<accounts::AccountView>, AppError> {
+    accounts::list(&profiles::base_dir(), &vault::dir(), credstore::system().as_ref()).map_err(AppError::from)
 }
 
 /// Copy every readable desktop session into the account vault.
 #[tauri::command(async)]
-fn sync_from_desktop() -> Result<vault::ImportReport, String> {
-    vault::import_from_desktop(&profiles::base_dir(), credstore::system().as_ref(), &vault::dir()).map_err(|e| e.to_string())
+fn sync_from_desktop() -> Result<vault::ImportReport, AppError> {
+    vault::import_from_desktop(&profiles::base_dir(), credstore::system().as_ref(), &vault::dir()).map_err(AppError::from)
 }
 
 /// Remove an account from the vault: index entry and stored credentials.
 #[tauri::command(async)]
-fn remove_from_vault(id: String) -> Result<(), String> {
-    vault::remove(&vault::dir(), credstore::system().as_ref(), &id).map_err(|e| e.to_string())
+fn remove_from_vault(id: String) -> Result<(), AppError> {
+    vault::remove(&vault::dir(), credstore::system().as_ref(), &id).map_err(AppError::from)
 }
 
 /// Force-kill Quick after a polite quit timed out; the caller retries the
 /// switch once this returns.
 #[tauri::command(async)]
-fn force_quit_desktop() -> Result<bool, String> {
-    match desktop::find().map_err(|e| e.to_string())? {
+fn force_quit_desktop() -> Result<bool, AppError> {
+    match desktop::find().map_err(AppError::from)? {
         None => Ok(false),
         Some(p) => {
-            desktop::force_quit(&p).map_err(|e| e.to_string())?;
+            desktop::force_quit(&p).map_err(AppError::from)?;
             Ok(true)
         }
     }
 }
 
 #[tauri::command(async)]
-fn desktop_status() -> Result<desktop::Status, String> {
-    desktop::status().map_err(|e| e.to_string())
+fn desktop_status() -> Result<desktop::Status, AppError> {
+    desktop::status().map_err(AppError::from)
 }
 
 /// Switch the desktop to `id`: refresh its tokens, write them where the
 /// desktop reads them, and start it again when `launch`.
 #[tauri::command(async)]
-async fn switch_account(id: String, launch: bool) -> Result<switcher::SwitchReport, String> {
+async fn switch_account(id: String, launch: bool) -> Result<switcher::SwitchReport, AppError> {
     let base = profiles::base_dir();
     let backups = switcher::backups_dir();
     let vault_dir = vault::dir();
-    let blob = switcher::refresh_target(&base, &id, &vault_dir).await.map_err(|e| e.to_string())?;
+    // held from the token refresh to the last write, then dropped with the closure
+    let guard = switcher::lock_desktop_writes()?;
+    let blob = switcher::refresh_target(&base, &id, &vault_dir).await.map_err(AppError::from)?;
     tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
         let store = credstore::system();
         switcher::commit(&base, &backups, &id, launch, store.as_ref(), &vault_dir, &blob)
     })
     .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())
+    .map_err(AppError::internal)?
+    .map_err(AppError::from)
 }
 
 /// Undo the last switch (the desktop must not be running).
 #[tauri::command(async)]
-fn restore_last_backup() -> Result<String, String> {
+fn restore_last_backup() -> Result<String, AppError> {
+    let _guard = switcher::lock_desktop_writes()?;
     switcher::restore_latest(&profiles::base_dir(), &switcher::backups_dir())
         .map(|p| p.display().to_string())
-        .map_err(|e| e.to_string())
+        .map_err(AppError::from)
 }
 
 /// Add an account through the browser sign-in, then write it to the desktop.
 #[tauri::command(async)]
-async fn login_account() -> Result<oauth::LoginOutcome, String> {
-    let account = oauth::login().await.map_err(|e| e.to_string())?;
+async fn login_account() -> Result<oauth::LoginOutcome, AppError> {
+    let account = oauth::login().await.map_err(AppError::from)?;
     let base = profiles::base_dir();
     let vault_dir = vault::dir();
     tauri::async_runtime::spawn_blocking(move || {
@@ -78,8 +84,36 @@ async fn login_account() -> Result<oauth::LoginOutcome, String> {
         oauth::commit(&base, store.as_ref(), &vault_dir, account)
     })
     .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())
+    .map_err(AppError::internal)?
+    .map_err(AppError::from)
+}
+
+/// Sign in to an account again in the browser and replace its stored
+/// sign-in, in the vault and (when it is in Quick) in Quick's copy.
+#[tauri::command(async)]
+async fn relogin_account(id: String) -> Result<oauth::LoginOutcome, AppError> {
+    let base = profiles::base_dir();
+    let manifest = profiles::read(&base)?;
+    let on_desktop = manifest.entries.iter().any(|e| e.id == id);
+    // Quick refreshes and writes back the account it is running; a new
+    // sign-in written underneath it would be replaced on its next refresh
+    if manifest.last_active.as_deref() == Some(id.as_str()) && desktop::find()?.is_some() {
+        return Err(AppError::new("relogin.active_running", "Quick 正在使用这个账号，请在 Quick 里重新登录，或先退出 Quick 再试"));
+    }
+    let account = oauth::login().await?;
+    let vault_dir = vault::dir();
+    tauri::async_runtime::spawn_blocking(move || -> Result<oauth::LoginOutcome, AppError> {
+        // only around the writes: the browser sign-in can take minutes
+        let _guard = if on_desktop { Some(switcher::lock_desktop_writes()?) } else { None };
+        let store = credstore::system();
+        let (outcome, blob) = oauth::relogin_commit(store.as_ref(), &vault_dir, &id, account)?;
+        if on_desktop {
+            switcher::write_desktop_blob(&base, store.as_ref(), &id, &blob)?;
+        }
+        Ok(outcome)
+    })
+    .await
+    .map_err(AppError::internal)?
 }
 
 #[derive(serde::Serialize)]
@@ -124,18 +158,18 @@ fn active_name(manifest: &profiles::Manifest) -> String {
         .as_deref()
         .and_then(|id| manifest.entries.iter().find(|e| e.id == id))
         .map(|e| if e.display_name.is_empty() { e.id.clone() } else { e.display_name.clone() })
-        .unwrap_or_else(|| "无".into())
+        .unwrap_or_default()
 }
 
 #[tauri::command(async)]
-fn list_backups() -> Result<Vec<BackupInfo>, String> {
+fn list_backups() -> Result<Vec<BackupInfo>, AppError> {
     let dir = switcher::backups_dir();
     let current = profiles::read(&profiles::base_dir()).ok();
     let current_ids: std::collections::HashSet<String> = current
         .as_ref()
         .map(|m| m.entries.iter().map(|e| e.id.clone()).collect())
         .unwrap_or_default();
-    let current_active = current.as_ref().map(active_name).unwrap_or_else(|| "无".into());
+    let current_active = current.as_ref().map(active_name).unwrap_or_default();
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
@@ -179,7 +213,7 @@ fn list_backups() -> Result<Vec<BackupInfo>, String> {
                     let changed = manifest.last_active.as_deref() != current.as_ref().and_then(|m| m.last_active.as_deref());
                     (manifest.entries.len(), active, changed, added, removed, entries, None)
                 }
-                None => (0, "无法解析".into(), false, Vec::new(), Vec::new(), Vec::new(), Some("这份 profiles.json 解析失败".into())),
+                None => (0, String::new(), false, Vec::new(), Vec::new(), Vec::new(), Some("invalid_manifest".into())),
             };
             out.push(BackupInfo {
                 name: name.to_string(),
@@ -200,50 +234,51 @@ fn list_backups() -> Result<Vec<BackupInfo>, String> {
 }
 
 #[tauri::command(async)]
-fn backup_now() -> Result<String, String> {
+fn backup_now() -> Result<String, AppError> {
     let base = profiles::base_dir();
     if !base.join(profiles::MANIFEST_FILE).is_file() {
-        return Err("Quick 的 profiles.json 不存在，先登录一次 Quick".into());
+        return Err(AppError::new("backup.no_manifest", "Quick 的 profiles.json 不存在，先登录一次 Quick"));
     }
-    let path = switcher::backup_if_changed(&base, &switcher::backups_dir()).map_err(|e| e.to_string())?;
+    let path = switcher::backup_if_changed(&base, &switcher::backups_dir()).map_err(AppError::from)?;
     Ok(path.display().to_string())
 }
 
 #[tauri::command(async)]
-fn delete_backup(name: String) -> Result<(), String> {
+fn delete_backup(name: String) -> Result<(), AppError> {
     if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
-        return Err("备份名不合法".into());
+        return Err(AppError::new("backup.invalid_name", "备份名不合法"));
     }
     let dir = switcher::backups_dir().join(&name);
     if !dir.is_dir() || !dir.join(profiles::MANIFEST_FILE).is_file() {
-        return Err("找不到这份备份".into());
+        return Err(AppError::new("backup.not_found", "找不到这份备份"));
     }
-    std::fs::remove_dir_all(dir).map_err(|e| e.to_string())
+    std::fs::remove_dir_all(dir).map_err(AppError::from)
 }
 
 #[tauri::command(async)]
-fn restore_backup(name: String) -> Result<(), String> {
+fn restore_backup(name: String) -> Result<(), AppError> {
     if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
-        return Err("备份名不合法".into());
+        return Err(AppError::new("backup.invalid_name", "备份名不合法"));
     }
-    if desktop::find().map_err(|e| e.to_string())?.is_some() {
-        return Err("桌面端还开着，先退出 Quick 再恢复".into());
+    let _guard = switcher::lock_desktop_writes()?;
+    if desktop::find().map_err(AppError::from)?.is_some() {
+        return Err(AppError::new("desktop.running", "桌面端还开着，先退出 Quick 再恢复"));
     }
     let src = switcher::backups_dir().join(&name).join(profiles::MANIFEST_FILE);
     if !src.is_file() {
-        return Err("找不到这份备份".into());
+        return Err(AppError::new("backup.not_found", "找不到这份备份"));
     }
-    switcher::restore_file(&profiles::base_dir(), &src).map_err(|e| e.to_string())
+    switcher::restore_file(&profiles::base_dir(), &src).map_err(AppError::from)
 }
 
 #[tauri::command(async)]
-async fn list_cloud_sessions(account_id: String) -> Result<Vec<quick::cloud_sessions::CloudSession>, String> {
-    quick::cloud_sessions::list(&profiles::base_dir(), &account_id).await.map_err(|e| e.to_string())
+async fn list_cloud_sessions(account_id: String) -> Result<Vec<quick::cloud_sessions::CloudSession>, AppError> {
+    quick::cloud_sessions::list(&profiles::base_dir(), &account_id).await.map_err(AppError::from)
 }
 
 #[tauri::command(async)]
-async fn export_cloud_sessions(account_id: String, ids: Vec<String>, format: String) -> Result<quick::cloud_sessions::CloudExport, String> {
-    quick::cloud_sessions::export(&profiles::base_dir(), &account_id, &ids, &format).await.map_err(|e| e.to_string())
+async fn export_cloud_sessions(account_id: String, ids: Vec<String>, format: String) -> Result<quick::cloud_sessions::CloudExport, AppError> {
+    quick::cloud_sessions::export(&profiles::base_dir(), &account_id, &ids, &format).await.map_err(AppError::from)
 }
 
 #[tauri::command(async)]
@@ -251,68 +286,71 @@ async fn import_cloud_sessions(
     source_account_id: String,
     target_account_id: String,
     ids: Vec<String>,
-) -> Result<Vec<quick::cloud_sessions::CloudImport>, String> {
+) -> Result<Vec<quick::cloud_sessions::CloudImport>, AppError> {
     quick::cloud_sessions::import_to_account(&source_account_id, &target_account_id, &ids)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(AppError::from)
 }
 
 #[tauri::command(async)]
-fn list_sessions(account_id: String) -> Result<Vec<quick::sessions::SessionInfo>, String> {
-    quick::sessions::list(&profiles::base_dir(), &account_id).map_err(|e| e.to_string())
+fn list_sessions(account_id: String) -> Result<Vec<quick::sessions::SessionInfo>, AppError> {
+    quick::sessions::list(&profiles::base_dir(), &account_id).map_err(AppError::from)
 }
 
 #[tauri::command(async)]
-fn export_sessions(account_id: String, ids: Vec<String>, format: String) -> Result<quick::sessions::SessionExport, String> {
-    quick::sessions::export(&profiles::base_dir(), &account_id, &ids, &format).map_err(|e| e.to_string())
+fn export_sessions(account_id: String, ids: Vec<String>, format: String) -> Result<quick::sessions::SessionExport, AppError> {
+    quick::sessions::export(&profiles::base_dir(), &account_id, &ids, &format).map_err(AppError::from)
 }
 
 #[tauri::command(async)]
-fn device_overview() -> Result<device_ids::DeviceOverview, String> {
+fn device_overview() -> Result<device_ids::DeviceOverview, AppError> {
     let store = credstore::system();
-    device_ids::overview(&profiles::base_dir(), &vault::dir(), store.as_ref()).map_err(|e| e.to_string())
+    device_ids::overview(&profiles::base_dir(), &vault::dir(), store.as_ref()).map_err(AppError::from)
 }
 
 #[tauri::command(async)]
-fn replace_account_device(id: String) -> Result<device_ids::DeviceIdentity, String> {
-    device_ids::replace_account(&profiles::base_dir(), &vault::dir(), &id).map_err(|e| e.to_string())
+fn replace_account_device(id: String) -> Result<device_ids::DeviceIdentity, AppError> {
+    let _guard = switcher::lock_desktop_writes()?;
+    device_ids::replace_account(&profiles::base_dir(), &vault::dir(), &id).map_err(AppError::from)
 }
 
 #[tauri::command(async)]
-fn restore_account_device(id: String, device_id: String, config: String, space: String) -> Result<(), String> {
+fn restore_account_device(id: String, device_id: String, config: String, space: String) -> Result<(), AppError> {
+    let _guard = switcher::lock_desktop_writes()?;
     let target = vault::IdentityChange { device_id, config, space, replaced_at: String::new() };
-    device_ids::restore_account(&profiles::base_dir(), &vault::dir(), &id, &target).map_err(|e| e.to_string())
+    device_ids::restore_account(&profiles::base_dir(), &vault::dir(), &id, &target).map_err(AppError::from)
 }
 
 /// Start the copy-and-paste login: returns the quick.aws.com sign-in address.
 /// A local callback server also runs, so a browser on this machine can
 /// finish both hops without any paste.
 #[tauri::command(async)]
-async fn manual_login_start() -> Result<String, String> {
-    oauth::start_manual().await.map_err(|e| e.to_string())
+async fn manual_login_start() -> Result<String, AppError> {
+    oauth::start_manual().await.map_err(AppError::from)
 }
 
 /// Feed a pasted callback address into the same handler the local server uses.
 #[tauri::command(async)]
-fn manual_login_submit(pasted: String) -> Result<(), String> {
-    oauth::submit_manual(&pasted).map_err(|e| e.to_string())
+fn manual_login_submit(pasted: String) -> Result<(), AppError> {
+    oauth::submit_manual(&pasted).map_err(AppError::from)
 }
 
 #[tauri::command(async)]
-async fn manual_login_status() -> Result<oauth::ManualStatus, String> {
-    oauth::manual_status().await.map_err(|e| e.to_string())
+async fn manual_login_status() -> Result<oauth::ManualStatus, AppError> {
+    oauth::manual_status().await.map_err(AppError::from)
 }
 
 /// Copy one desktop account into the vault (the "local credentials" import).
 #[tauri::command(async)]
-fn import_desktop_account(id: String) -> Result<bool, String> {
+fn import_desktop_account(id: String) -> Result<bool, AppError> {
     let store = credstore::system();
-    vault::import_one(&profiles::base_dir(), store.as_ref(), &vault::dir(), &id).map_err(|e| e.to_string())
+    vault::import_one(&profiles::base_dir(), store.as_ref(), &vault::dir(), &id).map_err(AppError::from)
 }
 
 /// Remove an account from the vault, and optionally from the desktop.
 #[tauri::command(async)]
-fn delete_account(id: String, remove_desktop: bool, remove_data: bool) -> Result<(), String> {
+fn delete_account(id: String, remove_desktop: bool, remove_data: bool) -> Result<(), AppError> {
+    let _guard = if remove_desktop { Some(switcher::lock_desktop_writes()?) } else { None };
     let store = credstore::system();
     manage::delete(
         &profiles::base_dir(),
@@ -323,23 +361,23 @@ fn delete_account(id: String, remove_desktop: bool, remove_data: bool) -> Result
         remove_desktop,
         remove_data,
     )
-    .map_err(|e| e.to_string())
+    .map_err(AppError::from)
 }
 
 #[tauri::command(async)]
-fn account_details(id: String) -> Result<Option<accounts::AccountDetails>, String> {
+fn account_details(id: String) -> Result<Option<accounts::AccountDetails>, AppError> {
     let store = credstore::system();
-    accounts::details(&profiles::base_dir(), &vault::dir(), store.as_ref(), &id).map_err(|e| e.to_string())
+    accounts::details(&profiles::base_dir(), &vault::dir(), store.as_ref(), &id).map_err(AppError::from)
 }
 
 /// Quota for one account, refreshing its access token when needed.
 #[tauri::command(async)]
-async fn account_usage(id: String) -> Result<api::Usage, String> {
+async fn account_usage(id: String) -> Result<api::Usage, AppError> {
     let original = {
         let store = credstore::system();
         vault::get_blob(store.as_ref(), &id)
-            .map_err(|e| e.to_string())?
-            .ok_or("账号库里没有这个账号的登录凭据，先同步桌面端")?
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::new("account.no_credentials", "账号库里没有这个账号的登录凭据，先同步桌面端").with("id", id.clone()))?
     };
     let (blob, usage) = match api::usage_for_blob(&api::client(), &original).await {
         Ok(v) => v,
@@ -348,12 +386,12 @@ async fn account_usage(id: String) -> Result<api::Usage, String> {
                 let flag = if message.contains("403") { "forbidden" } else { "auth_invalid" };
                 let _ = vault::set_flag(&vault::dir(), &id, Some(flag));
             }
-            return Err(e.to_string());
+            return Err(e.into());
         }
     };
     if blob != original {
         let store = credstore::system();
-        vault::upsert(&vault::dir(), store.as_ref(), &id, &blob).map_err(|e| e.to_string())?;
+        vault::upsert(&vault::dir(), store.as_ref(), &id, &blob).map_err(AppError::from)?;
         // with the desktop closed, keep its copy in step too; otherwise the
         // next last_active sync would replace the vault's fresher token
         if matches!(desktop::find(), Ok(None)) {
@@ -382,9 +420,10 @@ fn app_info(app: tauri::AppHandle) -> AppInfo {
     }
 }
 
+/// Commit subjects between two releases, for an update without notes.
 #[tauri::command]
-async fn check_for_update(app: tauri::AppHandle) -> Result<updates::UpdateInfo, String> {
-    updates::check(&app.package_info().version).await
+async fn update_changes(current: String, latest: String) -> Result<Vec<String>, AppError> {
+    updates::changes(&current, &latest).await
 }
 
 /// Tray menu items whose labels follow the UI language.
@@ -403,11 +442,11 @@ fn tray_labels(lang: &str) -> [&'static str; 3] {
 }
 
 #[tauri::command]
-fn set_tray_language(menu: tauri::State<'_, TrayMenu>, lang: String) -> Result<(), String> {
+fn set_tray_language(menu: tauri::State<'_, TrayMenu>, lang: String) -> Result<(), AppError> {
     let [open, refresh, quit] = tray_labels(&lang);
-    menu.open.set_text(open).map_err(|e| e.to_string())?;
-    menu.refresh.set_text(refresh).map_err(|e| e.to_string())?;
-    menu.quit.set_text(quit).map_err(|e| e.to_string())
+    menu.open.set_text(open).map_err(AppError::internal)?;
+    menu.refresh.set_text(refresh).map_err(AppError::internal)?;
+    menu.quit.set_text(quit).map_err(AppError::internal)
 }
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -445,18 +484,23 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-#[tauri::command]
-fn autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
-    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+fn autostart_error(e: impl std::fmt::Display) -> AppError {
+    let detail = e.to_string();
+    AppError::new("autostart.failed", format!("开机自启设置失败：{detail}")).with("detail", detail)
 }
 
 #[tauri::command]
-fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+fn autostart_enabled(app: tauri::AppHandle) -> Result<bool, AppError> {
+    app.autolaunch().is_enabled().map_err(autostart_error)
+}
+
+#[tauri::command]
+fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), AppError> {
     let al = app.autolaunch();
     if enabled {
-        al.enable().map_err(|e| e.to_string())
+        al.enable().map_err(autostart_error)
     } else {
-        al.disable().map_err(|e| e.to_string())
+        al.disable().map_err(autostart_error)
     }
 }
 
@@ -465,6 +509,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             setup_tray(app)?;
             Ok(())
@@ -478,6 +524,7 @@ pub fn run() {
             sync_from_desktop,
             remove_from_vault,
             login_account,
+            relogin_account,
             list_sessions,
             export_sessions,
             list_cloud_sessions,
@@ -498,7 +545,7 @@ pub fn run() {
             delete_backup,
             restore_backup,
             app_info,
-            check_for_update,
+            update_changes,
             autostart_enabled,
             set_autostart,
             set_tray_language

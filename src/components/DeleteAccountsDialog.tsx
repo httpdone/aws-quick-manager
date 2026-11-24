@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Account, deleteAccount } from "../lib/api";
 import { useT } from "../i18n";
+import { errorText } from "../lib/errors";
 import { hue } from "../lib/format";
 import { who } from "../lib/status";
 import Icon from "./Icon";
@@ -35,7 +36,7 @@ export default function DeleteAccountsDialog({ accounts, desktopRunning, onClose
         await deleteAccount(a.id, removeDesktop && a.on_desktop, removeDesktop && removeData && a.on_desktop);
         done += 1;
       } catch (e) {
-        failures.push(`${who(a)}：${String(e)}`);
+        failures.push(`${who(a)}：${errorText(t, e)}`);
       }
     }
     setBusy(false);

@@ -86,6 +86,7 @@ async fn main() {
             let base = profiles::base_dir();
             let vault_dir = vault::dir();
             async {
+                let _guard = switcher::lock_desktop_writes().map_err(|e| e.to_string())?;
                 let list = account_list()?;
                 let account = find_account(&list, target)?;
                 let blob = switcher::refresh_target(&base, &account.id, &vault_dir)
@@ -96,8 +97,8 @@ async fn main() {
                     .map_err(|e| e.to_string())?;
                 println!("switched to {} ({})", account.display_name, account.email);
                 println!("backup: {}", report.backup);
-                if let Some(note) = report.note {
-                    eprintln!("note: {note}");
+                for note in &report.notes {
+                    eprintln!("note: {}", note.message);
                 }
                 Ok(())
             }

@@ -5,6 +5,7 @@ pub mod credstore;
 pub mod desktop;
 pub mod device;
 pub mod device_ids;
+pub mod fsutil;
 pub mod manage;
 pub mod oauth;
 pub mod profiles;

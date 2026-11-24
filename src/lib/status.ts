@@ -18,11 +18,15 @@ export function accountStatus(a: Account, t: Messages): { label: string; tone: T
   if (a.flag === "forbidden") return { label: s.forbidden, tone: "bad" };
   if (!a.has_credentials && !a.in_vault) return { label: s.signedOut, tone: "bad" };
   if (a.refresh_failing_since) return { label: s.refreshFailing, tone: "bad" };
+  // an expired access token alone is normal: it lasts about an hour and is
+  // renewed automatically the next time the account is used
   const now = Date.now() / 1000;
   if (a.refresh_expires_at && a.refresh_expires_at < now) return { label: s.expired, tone: "bad" };
-  if (a.access_expires_at && a.access_expires_at < now) return { label: s.needsRefresh, tone: "warn" };
   return { label: s.ok, tone: "ok" };
 }
+
+/** The account can't be used until the user signs in to it again. */
+export const needsSignIn = (a: Account, t: Messages) => accountStatus(a, t).tone === "bad";
 
 /** Hours left in the account's main pool, -1 when unknown. */
 export const leftHours = (u?: Usage) => (u && u.windows.length ? u.windows[0].left_hours : -1);

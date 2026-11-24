@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Account,
   AppInfo,
@@ -8,6 +9,7 @@ import {
   SwitchReport,
   Usage,
   accountUsage,
+  reloginAccount,
   appInfo,
   desktopStatus,
   listAccounts,
@@ -15,18 +17,22 @@ import {
 } from "./lib/api";
 import { useT } from "./i18n";
 import type { Messages } from "./i18n";
+import { errorText } from "./lib/errors";
 import { canQuota, who } from "./lib/status";
+import { REPO_URL, useUpdates } from "./lib/updates";
 import Icon, { IconName } from "./components/Icon";
 import { cx, useUI } from "./components/ui";
 import AccountDetailsDialog from "./components/AccountDetailsDialog";
 import AddAccountDialog from "./components/AddAccountDialog";
 import DeleteAccountsDialog from "./components/DeleteAccountsDialog";
 import SwitchDialog from "./components/SwitchDialog";
+import UpdateDialog from "./components/UpdateDialog";
 import AccountsPage from "./pages/AccountsPage";
 import BackupsPage from "./pages/BackupsPage";
 import DevicesPage from "./pages/DevicesPage";
 import SessionsPage from "./pages/SessionsPage";
 import SettingsPage from "./pages/SettingsPage";
+import logo from "./assets/logo.svg";
 
 type Page = "accounts" | "sessions" | "devices" | "backups" | "settings";
 
@@ -66,7 +72,11 @@ export default function App() {
   const [switchTarget, setSwitchTarget] = useState<Account | null>(null);
   const [detailsFor, setDetailsFor] = useState<Account | null>(null);
   const [deleteTargets, setDeleteTargets] = useState<Account[] | null>(null);
+  const [relogging, setRelogging] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const updates = useUpdates();
+  const [updateOpen, setUpdateOpen] = useState(false);
+  const hasUpdate = !!updates.update;
 
   const refreshDesktop = useCallback(() => {
     desktopStatus()
@@ -91,7 +101,7 @@ export default function App() {
               return next;
             });
           })
-          .catch((e) => setUsageErrors((prev) => ({ ...prev, [a.id]: String(e) })))
+          .catch((e) => setUsageErrors((prev) => ({ ...prev, [a.id]: errorText(tRef.current, e) })))
           .finally(() =>
             setUsageLoading((prev) => {
               const next = new Set(prev);
@@ -115,7 +125,7 @@ export default function App() {
           const text = syncNotice(await syncFromDesktop(), tRef.current);
           if (text) toast(text, "info");
         } catch (e) {
-          toast(tRef.current.app.syncFailed(String(e)), "bad");
+          toast(tRef.current.app.syncFailed(errorText(tRef.current, e)), "bad");
         }
       }
       try {
@@ -125,7 +135,7 @@ export default function App() {
         void loadUsage(list);
       } catch (e) {
         setAccounts((prev) => prev ?? []);
-        toast(String(e), "bad");
+        toast(errorText(tRef.current, e), "bad");
       } finally {
         setLoading(false);
       }
@@ -210,7 +220,8 @@ export default function App() {
 
   const switched = (r: SwitchReport, a: Account) => {
     setSwitchTarget(null);
-    toast(r.note ?? (r.launched ? t.app.switchedLaunching(who(a)) : t.app.switched(who(a))), r.note ? "info" : "ok");
+    const note = r.notes.map((n) => errorText(t, n)).join(t.common.joinSep);
+    toast(note || (r.launched ? t.app.switchedLaunching(who(a)) : t.app.switched(who(a))), note ? "info" : "ok");
     refresh();
   };
 
@@ -222,6 +233,20 @@ export default function App() {
     },
     [refresh, toast],
   );
+
+  const relogin = async (a: Account) => {
+    setRelogging(a.id);
+    toast(t.accounts.reloginStarted(who(a)), "info");
+    try {
+      const r = await reloginAccount(a.id);
+      toast(t.accounts.relogged(r.email || r.display_name || who(a)));
+      await refresh();
+    } catch (e) {
+      toast(errorText(t, e), "bad");
+    } finally {
+      setRelogging(null);
+    }
+  };
 
   const deleted = (message: string) => {
     setDeleteTargets(null);
@@ -235,9 +260,7 @@ export default function App() {
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <span className="logo">
-            <Icon name="zap" size={16} />
-          </span>
+          <img className="logo" src={logo} alt="" width={30} height={30} />
           <div className="brandText">
             <b>Quick Manager</b>
             <small>{t.app.tagline}</small>
@@ -275,6 +298,24 @@ export default function App() {
       </aside>
 
       <main className="content">
+        <div className="topbar">
+          {updates.update && (
+            <button className="updatePill" onClick={() => setUpdateOpen(true)} title={t.update.pillTitle}>
+              <span className="pulse" />
+              {t.update.pill(updates.update.version)}
+            </button>
+          )}
+          <button
+            className="ghBtn"
+            onClick={() => (hasUpdate ? setUpdateOpen(true) : openUrl(REPO_URL).catch((e) => toast(errorText(t, e), "bad")))}
+            title={hasUpdate ? t.update.githubUpdateTitle : t.update.githubTitle}
+            aria-label="GitHub"
+          >
+            <Icon name="github" size={17} />
+            <span className="ghLabel">GitHub</span>
+            {hasUpdate && <i className="ghDot" />}
+          </button>
+        </div>
         {page === "accounts" && (
           <AccountsPage
             accounts={accounts}
@@ -288,6 +329,8 @@ export default function App() {
             onReloadUsage={reloadUsage}
             onAdd={() => setAddOpen(true)}
             onSwitch={setSwitchTarget}
+            onRelogin={relogin}
+            relogging={relogging}
             onDetails={setDetailsFor}
             onDelete={setDeleteTargets}
           />
@@ -295,9 +338,10 @@ export default function App() {
         {page === "sessions" && <SessionsPage accounts={accounts ?? []} />}
         {page === "devices" && <DevicesPage desktopRunning={!!desktop?.running} onChanged={() => refresh()} />}
         {page === "backups" && <BackupsPage desktopRunning={!!desktop?.running} onRestored={() => refresh()} />}
-        {page === "settings" && <SettingsPage info={info} desktop={desktop} onRefreshDesktop={refreshDesktop} />}
+        {page === "settings" && <SettingsPage info={info} desktop={desktop} onRefreshDesktop={refreshDesktop} updates={updates} onOpenUpdate={() => setUpdateOpen(true)} />}
       </main>
 
+      {updateOpen && updates.update && <UpdateDialog update={updates.update} onClose={() => setUpdateOpen(false)} />}
       {addOpen && <AddAccountDialog accounts={accounts ?? []} onClose={() => setAddOpen(false)} onDone={added} />}
       {detailsFor && (
         <AccountDetailsDialog

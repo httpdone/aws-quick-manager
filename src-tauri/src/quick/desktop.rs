@@ -51,6 +51,10 @@ pub enum DesktopError {
     Launch(String),
     #[error("没找到桌面端安装位置（已查找：{0}）")]
     NotInstalled(String),
+    #[error("安装目录里没有 Quick 主程序：{0}")]
+    NoMainExe(String),
+    #[error("安装目录 {0} 里有多个程序，无法确定哪个是 Quick：{1}")]
+    AmbiguousExe(String, String),
     #[error("强制结束 Quick 失败：{0}")]
     ForceKill(String),
 }
@@ -100,7 +104,7 @@ pub fn install_dirs() -> Vec<PathBuf> {
 
 /// The main executable in a Windows install folder: the one `.exe` at the
 /// top level that isn't the uninstaller.
-pub fn pick_main_exe(names: &[String]) -> Result<String, String> {
+pub fn pick_main_exe(names: &[String]) -> Result<String, Vec<String>> {
     let exes: Vec<&String> = names
         .iter()
         .filter(|n| n.to_lowercase().ends_with(".exe"))
@@ -108,13 +112,13 @@ pub fn pick_main_exe(names: &[String]) -> Result<String, String> {
         .collect();
     match exes.as_slice() {
         [one] => Ok((*one).clone()),
-        [] => Err("安装目录里没有 .exe".into()),
-        many => Err(format!("安装目录里有多个 .exe，无法确定主程序：{}", many.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "))),
+        [] => Err(Vec::new()),
+        many => Err(many.iter().map(|s| s.to_string()).collect()),
     }
 }
 
 #[cfg(windows)]
-fn main_exe_in(dir: &Path) -> Option<Result<PathBuf, String>> {
+fn main_exe_in(dir: &Path) -> Option<Result<PathBuf, Vec<String>>> {
     let rd = std::fs::read_dir(dir).ok()?;
     let names: Vec<String> = rd
         .filter_map(Result::ok)
@@ -132,7 +136,8 @@ pub fn installation() -> Result<(PathBuf, PathBuf), DesktopError> {
     for d in &dirs {
         match main_exe_in(d) {
             Some(Ok(exe)) => return Ok((d.clone(), exe)),
-            Some(Err(why)) => return Err(DesktopError::NotInstalled(format!("{}：{why}", d.display()))),
+            Some(Err(names)) if names.is_empty() => return Err(DesktopError::NoMainExe(d.display().to_string())),
+            Some(Err(names)) => return Err(DesktopError::AmbiguousExe(d.display().to_string(), names.join(", "))),
             None => {}
         }
     }
@@ -142,7 +147,7 @@ pub fn installation() -> Result<(PathBuf, PathBuf), DesktopError> {
             return Ok((d.clone(), d.clone()));
         }
     }
-    Err(DesktopError::NotInstalled(dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join("；")))
+    Err(DesktopError::NotInstalled(dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join("; ")))
 }
 
 pub fn installed_exe() -> Option<String> {
@@ -309,7 +314,7 @@ pub fn quit(p: &Proc, timeout: Duration) -> Result<(), DesktopError> {
 /// The processes from the install folder that are still running, for the
 /// timeout message: what is actually holding the app open.
 fn remaining() -> String {
-    let Ok((dir, _)) = installation() else { return "未知".into() };
+    let Ok((dir, _)) = installation() else { return String::new() };
     let procs = processes().unwrap_or_default();
     let left: Vec<String> = procs
         .iter()
@@ -319,7 +324,7 @@ fn remaining() -> String {
             format!("PID {} {name}", p.pid)
         })
         .collect();
-    if left.is_empty() { "无".into() } else { left.join("、") }
+    left.join(", ")
 }
 
 /// Force-kill the app and its backend, then wait for both to disappear.

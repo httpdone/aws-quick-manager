@@ -3,9 +3,9 @@ import { useT } from "../i18n";
 import { Account, DesktopStatus, Usage } from "../lib/api";
 import { fmtDate, fmtHours, fmtRelative, fmtTime, hue, isoSecs, nextResetLabel } from "../lib/format";
 import { getStored } from "../lib/prefs";
-import { Tone, accountStatus, canQuota, canSwitch, leftHours, who } from "../lib/status";
+import { Tone, accountStatus, canQuota, canSwitch, leftHours, who, needsSignIn } from "../lib/status";
 import Icon from "../components/Icon";
-import { Alert, Avatar, Empty, Segmented, StatusPill, cx } from "../components/ui";
+import { Alert, Avatar, Empty, Segmented, StatusPill, cx, Spinner } from "../components/ui";
 
 type Filter = "all" | "ok" | "attention" | "vault";
 type Sort = "default" | "quota" | "recent" | "name";
@@ -26,6 +26,9 @@ interface Props {
   onReloadUsage: (ids: string[]) => void;
   onAdd: () => void;
   onSwitch: (a: Account) => void;
+  onRelogin: (a: Account) => void;
+  /** the account being signed in again, if any */
+  relogging: string | null;
   onDetails: (a: Account) => void;
   onDelete: (list: Account[]) => void;
 }
@@ -60,8 +63,8 @@ export default function AccountsPage(props: Props) {
     let attention = 0;
     let vault = 0;
     for (const a of list) {
-      if (accountStatus(a, t).tone === "ok") ok += 1;
-      else attention += 1;
+      if (needsSignIn(a, t)) attention += 1;
+      else ok += 1;
       if (!a.on_desktop) vault += 1;
     }
     return { ok, attention, vault };
@@ -292,6 +295,8 @@ export default function AccountsPage(props: Props) {
               recommended={recommended === a.id}
               onToggle={() => toggle(a.id)}
               onSwitch={() => props.onSwitch(a)}
+              onRelogin={() => props.onRelogin(a)}
+              relogging={props.relogging}
               onDetails={() => props.onDetails(a)}
               onDelete={() => props.onDelete([a])}
               onReloadUsage={() => props.onReloadUsage([a.id])}
@@ -349,6 +354,8 @@ interface CardProps {
   recommended: boolean;
   onToggle: () => void;
   onSwitch: () => void;
+  onRelogin: () => void;
+  relogging: string | null;
   onDetails: () => void;
   onDelete: () => void;
   onReloadUsage: () => void;
@@ -358,6 +365,8 @@ function AccountCard(p: CardProps) {
   const { a } = p;
   const t = useT();
   const s = accountStatus(a, t);
+  const bad = needsSignIn(a, t);
+  const relogging = p.relogging === a.id;
   const name = who(a);
   const now = Date.now() / 1000;
   const expires = a.refresh_expires_at;
@@ -391,6 +400,13 @@ function AccountCard(p: CardProps) {
         <StatusPill tone={s.tone} label={s.label} />
       </div>
 
+      {bad && (
+        <div className="signInHint">
+          <Icon name="alert" size={13} />
+          <span>{t.accounts.signInHint}</span>
+        </div>
+      )}
+
       <QuotaBlock a={a} usage={p.usage} error={p.usageError} loading={p.usageLoading} onReload={p.onReloadUsage} />
 
       <div className="acctFoot">
@@ -416,7 +432,12 @@ function AccountCard(p: CardProps) {
           <button className="iconBtn dangerHover" onClick={p.onDelete} title={t.common.delete}>
             <Icon name="trash" />
           </button>
-          {a.active ? (
+          {bad ? (
+            <button className="btn primary sm" onClick={p.onRelogin} disabled={!!p.relogging} title={t.accounts.reloginTitle}>
+              {relogging ? <Spinner /> : <Icon name="globe" size={14} />}
+              {relogging ? t.accounts.relogging : t.accounts.relogin}
+            </button>
+          ) : a.active ? (
             <span className="activeMark">
               <Icon name="check" size={14} />
               {t.common.currentAccount}

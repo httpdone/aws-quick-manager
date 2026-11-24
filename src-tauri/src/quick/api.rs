@@ -196,7 +196,7 @@ pub async fn refresh_blob(http: &reqwest::Client, blob: &str) -> Result<String, 
     let t = refresh(http, &region_of(&tenant), &client_id, &client_secret, &refresh_token).await?;
     let lifetime = if t.expires_in > 0 { t.expires_in } else { 3600 };
     let now = chrono::Utc::now().timestamp() as f64;
-    let obj = v.as_object_mut().ok_or_else(|| ApiError::Http("凭据不是 JSON 对象".into()))?;
+    let obj = v.as_object_mut().ok_or_else(|| ApiError::Http("stored credentials are not a JSON object".into()))?;
     obj.insert("access_token".into(), Value::String(t.access_token));
     obj.insert("access_token_expiry".into(), Value::from(now + lifetime as f64));
     if !t.refresh_token.is_empty() && t.refresh_token != refresh_token {
@@ -327,7 +327,7 @@ pub async fn usage(http: &reqwest::Client, tenant_url: &str, access_token: &str,
     let resp = r
         .get("eventResponse")
         .and_then(|e| e.get(format!("{ty}Response")))
-        .ok_or_else(|| ApiError::Http(format!("用量查询失败：{}", truncate(&s(&r, &["errorMessage"]), 200))))?;
+        .ok_or_else(|| ApiError::Http(format!("usage query failed: {}", truncate(&s(&r, &["errorMessage"]), 200))))?;
     Ok(usage_from(resp))
 }
 

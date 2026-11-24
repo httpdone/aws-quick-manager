@@ -82,7 +82,7 @@ pub fn ensure_unique(dir: &Path, known: Option<&str>, used: &HashSet<String>) ->
         if used.contains(&current) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("设备 ID {current} 已被其他账号使用"),
+                format!("{current}"),
             ));
         }
         return Ok(current);
@@ -91,7 +91,7 @@ pub fn ensure_unique(dir: &Path, known: Option<&str>, used: &HashSet<String>) ->
         if used.contains(k) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("设备 ID {k} 已被其他账号使用"),
+                format!("{k}"),
             ));
         }
         write(dir, k)?;

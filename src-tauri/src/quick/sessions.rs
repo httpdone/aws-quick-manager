@@ -25,6 +25,8 @@ pub enum SessionError {
     NoProfile,
     #[error("读取会话库失败：{0}")]
     Db(String),
+    #[error("没有可导出的会话")]
+    NothingToExport,
     #[error("写导出文件失败：{0}")]
     Io(#[from] std::io::Error),
 }
@@ -182,7 +184,7 @@ pub fn export(
         all.into_iter().filter(|s| ids.iter().any(|id| id == &s.id)).collect()
     };
     if selected.is_empty() {
-        return Err(SessionError::Db("没有可导出的会话".into()));
+        return Err(SessionError::NothingToExport);
     }
 
     let path = db_path(base, account_id)?;

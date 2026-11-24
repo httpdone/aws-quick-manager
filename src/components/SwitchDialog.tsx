@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Account, DesktopStatus, SwitchReport, forceQuitDesktop, switchAccount } from "../lib/api";
 import { useT } from "../i18n";
+import { errorCode, errorText } from "../lib/errors";
 import { hue } from "../lib/format";
 import { getLaunchAfterSwitch, setLaunchAfterSwitch } from "../lib/prefs";
 import { who } from "../lib/status";
@@ -17,6 +18,9 @@ interface Props {
 }
 
 type Phase = "confirm" | "running" | "needForce" | "error";
+
+/** Quick didn't go away on request: offer to force it. */
+const FORCE_CODES = ["desktop.still_running", "desktop.close_refused", "desktop.backend_still_running"];
 
 export default function SwitchDialog({ target, current, desktop, onClose, onDone }: Props) {
   const t = useT();
@@ -43,9 +47,8 @@ export default function SwitchDialog({ target, current, desktop, onClose, onDone
       const report = await switchAccount(target.id, launch);
       onDone(report, target);
     } catch (e) {
-      const text = String(e);
-      setMessage(text);
-      setPhase(text.includes("没有退出") ? "needForce" : "error");
+      setMessage(errorText(t, e));
+      setPhase(FORCE_CODES.includes(errorCode(e) ?? "") ? "needForce" : "error");
     }
   };
 

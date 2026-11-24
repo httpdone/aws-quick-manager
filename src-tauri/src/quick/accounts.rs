@@ -89,6 +89,19 @@ pub fn list_from(manifest: &Manifest, vault: &[VaultEntry], store: &dyn RawStore
             };
             let s = session.clone().unwrap_or(Value::Null);
             let display = text(&s, "display_name");
+            // The tool refreshes the vault copy itself (quota reads, switching);
+            // Quick only refreshes the account it is running. Show whichever
+            // copy is fresher, or every idle account would look expired.
+            let in_vault = vaulted.contains_key(e.id.as_str());
+            let v = if in_vault {
+                vault::get_blob(store, &e.id)
+                    .ok()
+                    .flatten()
+                    .and_then(|b| serde_json::from_str::<Value>(&b).ok())
+                    .unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            };
             AccountView {
                 id: e.id.clone(),
                 provider: e.provider.clone(),
@@ -98,11 +111,14 @@ pub fn list_from(manifest: &Manifest, vault: &[VaultEntry], store: &dyn RawStore
                 aws_account_id: text(&s, "aws_account_id"),
                 active: e.id == active,
                 has_credentials: session.as_ref().is_some_and(|s| s.get("refresh_token").is_some()),
-                access_expires_at: secs(&s, "access_token_expiry"),
-                refresh_expires_at: secs(&s, "refresh_token_expiry"),
-                refresh_failing_since: e.refresh_failing_since.clone().filter(|v| !v.is_null()),
+                access_expires_at: secs(&s, "access_token_expiry").max(secs(&v, "access_token_expiry")),
+                refresh_expires_at: secs(&s, "refresh_token_expiry").max(secs(&v, "refresh_token_expiry")),
+                // Quick's own "refresh failing" mark; for a vaulted account the
+                // tool's flag (set and cleared by its own refreshes) is the
+                // current answer, and Quick's mark would never go away
+                refresh_failing_since: if in_vault { None } else { e.refresh_failing_since.clone().filter(|v| !v.is_null()) },
                 last_used_at: e.last_used_at.clone(),
-                in_vault: vaulted.contains_key(e.id.as_str()),
+                in_vault,
                 on_desktop: true,
                 error,
                 flag: vaulted.get(e.id.as_str()).and_then(|v| v.flag.clone()),
@@ -265,6 +281,32 @@ mod tests {
         // index entry without a stored secret: listed, but not usable
         assert!(!v[1].has_credentials && v[1].email == "g@x");
         assert!(!serde_json::to_string(&v).unwrap().contains("SECRET"));
+    }
+
+    #[test]
+    fn vaulted_account_shows_the_fresher_copy_and_drops_quicks_failure_mark() {
+        let s = MemStore::default();
+        // Quick's copy is stale: it only refreshes the account it is running
+        s.set("quickwork-social-social-a", r#"{"refresh_token":"r","access_token_expiry":100,"refresh_token_expiry":200}"#).unwrap();
+        // the tool refreshed its own copy since
+        s.set("aws-quick-manager/social-a", r#"{"refresh_token":"r","access_token_expiry":5000,"refresh_token_expiry":9000}"#).unwrap();
+        let failing = Some(serde_json::json!("2026-01-01T00:00:00Z"));
+        let m = Manifest {
+            version: 1,
+            entries: vec![
+                ProfileEntry { id: "social-a".into(), provider: "social".into(), refresh_failing_since: failing.clone(), ..Default::default() },
+                ProfileEntry { id: "social-b".into(), provider: "social".into(), refresh_failing_since: failing, ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        let vault = vec![VaultEntry { id: "social-a".into(), ..Default::default() }];
+        let v = list_from(&m, &vault, &s);
+        assert_eq!(v[0].access_expires_at, 5000);
+        assert_eq!(v[0].refresh_expires_at, 9000);
+        // the tool's own flag decides for vaulted accounts
+        assert!(v[0].refresh_failing_since.is_none());
+        // an account only in Quick keeps Quick's mark
+        assert!(v[1].refresh_failing_since.is_some());
     }
 
     /// Reads the real store; run with `cargo test -- --ignored live`.

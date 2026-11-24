@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { AppError } from "./errors";
 
 export interface Account {
   id: string;
@@ -30,7 +31,8 @@ export interface SwitchReport {
   backup: string;
   was_running: boolean;
   launched: boolean;
-  note: string | null;
+  /** things to tell the user after a switch that otherwise worked */
+  notes: AppError[];
 }
 
 export interface ImportReport {
@@ -116,7 +118,13 @@ export interface BaseIdentity {
 export interface DeviceOverview {
   accounts: DeviceAccount[];
   base: BaseIdentity;
-  conflicts: string[];
+  conflicts: IdConflict[];
+}
+
+/** An id more than one account uses. */
+export interface IdConflict {
+  kind: "device" | "config" | "space";
+  id: string;
 }
 
 export interface SessionInfo {
@@ -179,6 +187,7 @@ export interface BackupInfo {
   added: string[];
   removed: string[];
   entries: BackupAccount[];
+  /** "invalid_manifest" when the backup can't be parsed */
   parse_error: string | null;
 }
 
@@ -189,12 +198,6 @@ export interface AppInfo {
   backups_dir: string;
 }
 
-export interface UpdateInfo {
-  current: string;
-  latest: string;
-  update_available: boolean;
-  release_url: string;
-}
 
 export const listAccounts = () => invoke<Account[]>("list_accounts");
 export const desktopStatus = () => invoke<DesktopStatus>("desktop_status");
@@ -207,10 +210,12 @@ export interface ManualStatus {
   step: string;
   url: string | null;
   account: LoginOutcome | null;
-  error: string | null;
+  error: AppError | null;
 }
 
 export const loginAccount = () => invoke<LoginOutcome>("login_account");
+/** Sign in to an existing account again and replace its stored sign-in. */
+export const reloginAccount = (id: string) => invoke<LoginOutcome>("relogin_account", { id });
 export const listSessions = (accountId: string) => invoke<SessionInfo[]>("list_sessions", { accountId });
 export const exportSessions = (accountId: string, ids: string[], format: "md" | "json") =>
   invoke<SessionExport>("export_sessions", { accountId, ids, format });
@@ -241,7 +246,8 @@ export const backupNow = () => invoke<string>("backup_now");
 export const deleteBackup = (name: string) => invoke<void>("delete_backup", { name });
 export const restoreBackup = (name: string) => invoke<void>("restore_backup", { name });
 export const appInfo = () => invoke<AppInfo>("app_info");
-export const checkForUpdate = () => invoke<UpdateInfo>("check_for_update");
+/** Commit subjects between two releases (for an update without notes). */
+export const updateChanges = (current: string, latest: string) => invoke<string[]>("update_changes", { current, latest });
 export const autostartEnabled = () => invoke<boolean>("autostart_enabled");
 export const setAutostart = (enabled: boolean) => invoke<void>("set_autostart", { enabled });
 export const setTrayLanguage = (lang: "zh" | "en") => invoke<void>("set_tray_language", { lang });

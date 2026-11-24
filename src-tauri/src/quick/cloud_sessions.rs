@@ -44,6 +44,14 @@ pub enum CloudError {
     Session(String),
     #[error("云端请求失败：{0}")]
     Api(String),
+    #[error("没有可导出的会话")]
+    NothingToExport,
+    #[error("没有选择要导入的会话")]
+    NothingSelected,
+    #[error("会话 {0} 没有可导入的事件")]
+    NoEvents(String),
+    #[error("没有可上传的事件")]
+    NothingUploaded,
     #[error("写导出文件失败：{0}")]
     Io(#[from] std::io::Error),
 }
@@ -191,7 +199,7 @@ impl Agent {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        Err(CloudError::NotReady("健康检查超时".into()))
+        Err(CloudError::NotReady("health check timed out".into()))
     }
 
     async fn sncs(&self) -> Result<(String, String), CloudError> {
@@ -212,7 +220,7 @@ impl Agent {
         let id_token = v.get("id_token").and_then(Value::as_str).unwrap_or_default().to_string();
         let tenant = v.get("tenant_url").and_then(Value::as_str).unwrap_or_default().trim_end_matches('/').to_string();
         if id_token.is_empty() || tenant.is_empty() {
-            return Err(CloudError::Session("会话响应里缺少 id_token 或 tenant_url".into()));
+            return Err(CloudError::Session("response is missing id_token or tenant_url".into()));
         }
         Ok((id_token, tenant))
     }
@@ -376,7 +384,7 @@ pub async fn export(base: &Path, account_id: &str, ids: &[String], format: &str)
         all.into_iter().filter(|s| ids.iter().any(|id| id == &s.id)).collect()
     };
     if selected.is_empty() {
-        return Err(CloudError::Api("没有可导出的会话".into()));
+        return Err(CloudError::NothingToExport);
     }
 
     let markdown = format != "json";
@@ -487,7 +495,7 @@ async fn create_session(client: &Client, token: &str, tenant: &str) -> Result<St
         .or_else(|| body.get("id"))
         .and_then(Value::as_str)
         .map(str::to_string)
-        .ok_or_else(|| CloudError::Api("创建会话没有返回 session_id".into()))
+        .ok_or_else(|| CloudError::Api("creating a session returned no session_id".into()))
 }
 
 async fn delete_session(client: &Client, token: &str, tenant: &str, session_id: &str) -> Result<(), CloudError> {
@@ -537,7 +545,7 @@ pub async fn import_to_account(
     ids: &[String],
 ) -> Result<Vec<CloudImport>, CloudError> {
     if ids.is_empty() {
-        return Err(CloudError::Api("没有选择要导入的会话".into()));
+        return Err(CloudError::NothingSelected);
     }
 
     // read the source strictly read-only
@@ -549,7 +557,7 @@ pub async fn import_to_account(
     for id in ids {
         let events = fetch_events(&client, &source_token, &source_tenant, id).await?;
         if events.is_empty() {
-            return Err(CloudError::Api(format!("会话 {id} 没有可导入的事件")));
+            return Err(CloudError::NoEvents(id.clone()));
         }
         sources.push((id.clone(), events));
     }
@@ -581,7 +589,7 @@ pub async fn import_to_account(
         }
         if uploaded == 0 {
             let _ = delete_session(&client, &target_token, &target_tenant, &target_id).await;
-            return Err(CloudError::Api("没有可上传的事件".into()));
+            return Err(CloudError::NothingUploaded);
         }
         let messages = message_count(&client, &target_token, &target_tenant, &target_id).await.unwrap_or(0);
         imports.push(CloudImport {

@@ -414,15 +414,11 @@ kbd {
 }
 .brand { display: flex; align-items: center; gap: 10px; padding: 2px 8px 6px; }
 .logo {
-  display: grid;
-  place-items: center;
+  display: block;
   width: 30px;
   height: 30px;
   flex: none;
-  border-radius: 9px;
-  color: #fff;
-  background: linear-gradient(135deg, #ff9a3c 0%, #f45b69 55%, #6b5cff 100%);
-  box-shadow: 0 4px 12px -4px rgba(244, 91, 105, 0.6);
+  filter: drop-shadow(0 4px 8px rgba(244, 91, 105, 0.35));
 }
 .brandText { display: grid; min-width: 0; }
 .brandText b { font-size: 13.5px; font-weight: 700; }
@@ -472,7 +468,7 @@ kbd {
 .dot.bad { background: var(--bad); }
 
 .content { min-width: 0; overflow-y: auto; scroll-behavior: smooth; }
-.page { max-width: 1040px; margin: 0 auto; padding: 26px 30px 96px; animation: fadeIn 0.18s ease-out; }
+.page { max-width: 1040px; margin: 0 auto; padding: 4px 30px 96px; animation: fadeIn 0.18s ease-out; }
 .page.narrow { max-width: 760px; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
@@ -556,6 +552,7 @@ kbd {
 .acctName { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 14px; font-weight: 650; }
 .acctSub { color: var(--text-3); font-size: 12px; }
 
+.signInHint { display: flex; align-items: center; gap: 7px; padding: 7px 10px; border-radius: var(--r); background: var(--bad-soft); color: var(--bad); font-size: 12px; }
 .quota { display: grid; gap: 7px; padding: 10px 12px; border-radius: var(--r); background: var(--surface-2); border: 1px solid var(--border); transition: opacity 0.15s; }
 .quota.muted { color: var(--text-3); font-size: 12px; }
 .quota.isLoading { opacity: 0.65; }
@@ -864,11 +861,110 @@ kbd {
   .deskStatus { justify-content: center; padding: 6px 0; }
   .batchBar { left: calc(50% + 30px); }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .page { padding: 20px 18px 96px; }
+  .page { padding: 4px 18px 96px; }
+  .topbar { padding: 0 12px; }
+  .ghLabel { display: none; }
+  .ghBtn { width: 34px; padding: 0; justify-content: center; }
+  .ghHero { flex-wrap: wrap; }
   .methods { grid-template-columns: 1fr; }
   .method { grid-template-columns: auto 1fr; column-gap: 10px; }
   .methodIcon { grid-row: span 2; margin: 0; }
 }
+
+/* ============================================================
+   Top bar: GitHub and updates
+   ============================================================ */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  height: 50px;
+  padding: 0 20px;
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  backdrop-filter: blur(10px);
+}
+.ghBtn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 14px 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 650;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.12s, box-shadow 0.12s, transform 0.12s;
+}
+.ghBtn:hover { border-color: var(--text-3); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.ghDot { position: absolute; top: -2px; right: -2px; width: 10px; height: 10px; border-radius: 50%; background: var(--bad); box-shadow: 0 0 0 2px var(--bg); }
+.updatePill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 15px 0 13px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 650;
+  white-space: nowrap;
+  box-shadow: 0 6px 16px -6px color-mix(in srgb, var(--accent) 75%, transparent);
+  animation: fadeIn 0.2s ease-out;
+  transition: background 0.12s, transform 0.12s;
+}
+.updatePill:hover { background: var(--accent-hover); transform: translateY(-1px); }
+.pulse { position: relative; width: 7px; height: 7px; flex: none; border-radius: 50%; background: #fff; }
+.pulse::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.75); animation: ping 1.6s ease-out infinite; }
+@keyframes ping { from { transform: scale(0.5); opacity: 1; } to { transform: scale(1.5); opacity: 0; } }
+
+/* GitHub card on the settings page */
+.ghCard { padding: 0; overflow: hidden; }
+.ghHero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px;
+  background: linear-gradient(120deg, color-mix(in srgb, var(--accent) 12%, var(--surface)) 0%, var(--surface) 70%);
+  border-bottom: 1px solid var(--border);
+}
+.ghLogo { display: grid; place-items: center; width: 50px; height: 50px; flex: none; border-radius: 14px; background: #1f2328; color: #fff; box-shadow: var(--shadow-md), inset 0 0 0 1px rgba(255, 255, 255, 0.12); }
+.ghText { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.ghText b { font-size: 15px; font-weight: 700; }
+.ghText small { color: var(--text-2); font-size: 12.5px; }
+.ghCard .settingRow { padding: 12px 18px; border-top: 0; }
+.okText { color: var(--ok) !important; font-weight: 600; }
+
+/* update dialog */
+.updateHead { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: var(--r-lg); background: var(--accent-soft); }
+.updateHead > div { display: grid; gap: 1px; }
+.updateHead b { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.updateHead small { color: var(--text-3); font-size: 12px; }
+.updateIcon { display: grid; place-items: center; width: 38px; height: 38px; flex: none; border-radius: 11px; background: var(--accent); color: #fff; }
+.updateNotes { display: grid; gap: 8px; }
+.updateNotes h3 { font-size: 12.5px; font-weight: 700; color: var(--text-2); }
+.updateNotes h4 { font-size: 12px; font-weight: 650; color: var(--text-3); margin: 4px 0 0; }
+.notes { max-height: 180px; overflow-y: auto; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface-2); color: var(--text-2); font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.changeList { list-style: none; margin: 0; padding: 10px 12px; display: grid; gap: 5px; max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface-2); }
+.changeList li { display: flex; gap: 9px; font-size: 12.5px; color: var(--text-2); overflow-wrap: anywhere; }
+.changeList li::before { content: ""; width: 5px; height: 5px; flex: none; margin-top: 7px; border-radius: 50%; background: var(--accent); }
+.pkgRow { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--r); font-size: 12.5px; color: var(--text-2); }
+.pkgRow .mono { flex: 1; }
+.progress { display: grid; gap: 6px; }
+.progressBar { height: 8px; border-radius: 8px; background: var(--sunken); overflow: hidden; box-shadow: inset 0 0 0 1px var(--border); }
+.progressBar > span { display: block; height: 100%; border-radius: 8px; background: var(--accent); transition: width 0.2s ease; }
+.progressBar.indeterminate > span { width: 35%; animation: slide 1.1s ease-in-out infinite; }
+@keyframes slide { from { transform: translateX(-110%); } to { transform: translateX(310%); } }
+.updateHint { color: var(--text-3); font-size: 12px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }

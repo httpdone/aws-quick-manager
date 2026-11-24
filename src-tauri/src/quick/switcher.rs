@@ -8,10 +8,12 @@
 //! desktop again.
 
 use super::api;
+use crate::error::AppError;
 use super::credstore::{self, RawStore};
 use super::desktop::{self, DesktopError};
 use super::device;
 use super::device_ids;
+use super::fsutil::FileLock;
 use super::profiles::{self, Manifest, ProfileEntry};
 use super::vault;
 use serde::Serialize;
@@ -30,6 +32,8 @@ pub enum SwitchError {
     AlreadyActive,
     #[error("没有可恢复的备份")]
     NoBackup,
+    #[error("另一个操作正在修改 Quick 的账号文件，请稍后再试")]
+    Busy,
     #[error("桌面端还开着，先退出 Quick 再恢复")]
     DesktopRunning,
     #[error("账号库里没有 {0} 的登录凭据，桌面端也没有可读取的登录信息")]
@@ -42,8 +46,10 @@ pub enum SwitchError {
     VerifyFailed(String),
     #[error("设备标识读写失败：{0}")]
     Device(String),
-    #[error("{0}")]
-    DeviceConflict(String),
+    #[error("设备 ID 和账号 {0} 重复，先到设备 ID 页处理")]
+    DeviceConflictWith(String),
+    #[error("设备 ID {0} 已被其他账号使用，先到设备 ID 页处理")]
+    DeviceInUse(String),
     #[error(transparent)]
     Desktop(#[from] DesktopError),
     #[error("读写文件失败：{0}")]
@@ -57,7 +63,7 @@ pub struct SwitchReport {
     pub was_running: bool,
     pub launched: bool,
     /// something the user has to do by hand
-    pub note: Option<String>,
+    pub notes: Vec<AppError>,
 }
 
 /// This tool's own folder (backups, config), outside the desktop's.
@@ -67,6 +73,18 @@ pub fn app_dir() -> PathBuf {
 
 pub fn backups_dir() -> PathBuf {
     app_dir().join("backups")
+}
+
+fn lock_at(path: &Path) -> Result<FileLock, SwitchError> {
+    FileLock::try_acquire(path)?.ok_or(SwitchError::Busy)
+}
+
+/// Held while anything rewrites Quick's account list, its credentials or
+/// its device files (switch, delete, restore, re-login, device ids), so the
+/// app and `aqm` never interleave two such changes. Fails with `Busy`
+/// instead of waiting: the other operation can take a while.
+pub fn lock_desktop_writes() -> Result<FileLock, SwitchError> {
+    lock_at(&app_dir().join("desktop.lock"))
 }
 
 #[allow(dead_code)] // exercised by the manifest tests; commit() builds entries itself
@@ -135,9 +153,7 @@ pub fn latest_backup(backups: &Path) -> io::Result<Option<PathBuf>> {
 
 /// Put a backed-up manifest back (temp file + rename).
 pub fn restore_file(base: &Path, src: &Path) -> io::Result<()> {
-    let tmp = base.join(format!("{}.restore.tmp", profiles::MANIFEST_FILE));
-    fs::copy(src, &tmp)?;
-    fs::rename(tmp, base.join(profiles::MANIFEST_FILE))
+    super::fsutil::atomic_write(&base.join(profiles::MANIFEST_FILE), &fs::read(src)?)
 }
 
 /// Refresh the target's tokens before anything is touched.
@@ -197,7 +213,7 @@ pub fn write_desktop_blob(base: &Path, store: &dyn RawStore, id: &str, blob: &st
     credstore::write_session_text(store, &target, blob).map_err(|e| SwitchError::Cred(e.to_string()))?;
     let back = credstore::read_session_text(store, &target).map_err(|e| SwitchError::Cred(e.to_string()))?;
     if back.as_deref() != Some(blob) {
-        return Err(SwitchError::Cred("写入桌面端凭据后读回不一致".into()));
+        return Err(SwitchError::Cred("read-back mismatch after writing".into()));
     }
     Ok(())
 }
@@ -214,9 +230,7 @@ pub fn commit(
     blob: &str,
 ) -> Result<SwitchReport, SwitchError> {
     if let Some(other) = device_ids::conflict_for(base, vault_dir, id)? {
-        return Err(SwitchError::DeviceConflict(format!(
-            "设备 ID 和账号 {other} 重复，先到设备 ID 页处理"
-        )));
+        return Err(SwitchError::DeviceConflictWith(other));
     }
 
     // give the account being left the base pair it has been using, and make
@@ -231,10 +245,10 @@ pub fn commit(
     }
 
     // the account that just quit may have refreshed its tokens on the way out
-    let mut note = match vault::import_from_desktop(base, store, vault_dir) {
-        Ok(_) => None,
-        Err(e) => Some(format!("没读回桌面端的登录信息：{e}")),
-    };
+    let mut notes: Vec<AppError> = Vec::new();
+    if let Err(e) = vault::import_from_desktop(base, store, vault_dir) {
+        notes.push(AppError::new("switch.readback_failed", format!("没读回桌面端的登录信息：{e}")).with("detail", e.to_string()));
+    }
 
     // the desktop may have rewritten the manifest too
     let mut m = profiles::read(base)?;
@@ -303,7 +317,7 @@ pub fn commit(
     let used = device_ids::used_device_ids(base, vault_dir, id)?;
     let device_id = device::ensure_unique(&profile, known.as_deref(), &used).map_err(|e| {
         if e.kind() == io::ErrorKind::InvalidInput {
-            SwitchError::DeviceConflict(format!("{}，先到设备 ID 页处理", e))
+            SwitchError::DeviceInUse(e.to_string())
         } else {
             SwitchError::Device(e.to_string())
         }
@@ -325,25 +339,18 @@ pub fn commit(
 
     profiles::write(base, &m)?;
 
-    let mut report = SwitchReport { backup: saved.display().to_string(), was_running: running.is_some(), launched: false, note: None };
+    let mut report = SwitchReport { backup: saved.display().to_string(), was_running: running.is_some(), launched: false, notes: Vec::new() };
     if launch {
         match desktop::installed_exe() {
             Some(exe) => match desktop::launch(&exe) {
                 Ok(()) => report.launched = true,
-                Err(e) => note = Some(push_note(note, format!("已切换，但{e}，请手动打开 Quick"))),
+                Err(e) => notes.push(AppError::new("switch.launch_failed", format!("已切换，但{e}，请手动打开 Quick")).with("detail", e.to_string())),
             },
-            None => note = Some(push_note(note, "已切换，但没找到桌面端安装位置，请手动打开 Quick".into())),
+            None => notes.push(AppError::new("switch.not_installed", "已切换，但没找到桌面端安装位置，请手动打开 Quick")),
         }
     }
-    report.note = note;
+    report.notes = notes;
     Ok(report)
-}
-
-fn push_note(note: Option<String>, extra: String) -> String {
-    match note {
-        Some(n) => format!("{n}；{extra}"),
-        None => extra,
-    }
 }
 
 /// Undo the last switch: put the newest backup back.
@@ -425,5 +432,15 @@ mod tests {
     #[test]
     fn no_backup_is_none() {
         assert!(latest_backup(&temp("none")).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_second_writer_is_turned_away_while_the_first_holds_the_lock() {
+        let path = temp("desktop-lock").join("desktop.lock");
+        let first = lock_at(&path).unwrap();
+        assert!(matches!(lock_at(&path), Err(SwitchError::Busy)));
+        drop(first);
+        assert!(lock_at(&path).is_ok());
+        let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 }
