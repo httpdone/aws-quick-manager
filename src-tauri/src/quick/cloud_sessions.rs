@@ -21,6 +21,7 @@ use base64::Engine;
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
 use std::net::TcpListener;
@@ -52,6 +53,8 @@ pub enum CloudError {
     NoEvents(String),
     #[error("没有可上传的事件")]
     NothingUploaded,
+    #[error("转入中途失败（已转入 {done} 个）：{detail}")]
+    ImportFailed { done: usize, left_behind: Option<String>, detail: String },
     #[error("写导出文件失败：{0}")]
     Io(#[from] std::io::Error),
 }
@@ -71,6 +74,64 @@ pub struct CloudExport {
     pub path: String,
     pub sessions: usize,
     pub messages: usize,
+    /// sessions whose messages may be cut off at the page limit
+    pub truncated: Vec<String>,
+}
+
+/// Sessions per page, and a guard against a cursor that never ends.
+const PAGE_SIZE: &str = "100";
+const MAX_PAGES: usize = 500;
+/// Messages read per session (that endpoint isn't paged here).
+const MESSAGE_LIMIT: usize = 100;
+
+/// `api/sessions` for the first page, `api/sessions/page/<cursor>` after.
+fn page_path(cursor: Option<&str>) -> String {
+    match cursor {
+        None => "api/sessions".into(),
+        Some(c) => format!("api/sessions/page/{}", url::form_urlencoded::byte_serialize(c.as_bytes()).collect::<String>()),
+    }
+}
+
+/// The cursor for the next page; none (null, empty or missing) on the last.
+fn next_cursor(body: &Value) -> Option<String> {
+    body.get("nextCursor").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+fn session_of(item: &Value) -> Option<CloudSession> {
+    let id = item.get("id").and_then(Value::as_str).filter(|s| !s.is_empty())?.to_string();
+    Some(CloudSession {
+        id,
+        title: item.get("title").and_then(Value::as_str).unwrap_or_default().to_string(),
+        created_at: item.get("created_at").and_then(Value::as_f64).unwrap_or(0.0),
+        updated_at: item.get("updated_at").and_then(Value::as_f64).unwrap_or(0.0),
+        message_count: item.get("message_count").and_then(Value::as_i64).unwrap_or(0),
+        archived: item.get("archived").and_then(Value::as_bool).unwrap_or(false),
+    })
+}
+
+/// Every session of the account, following `nextCursor` until it runs out.
+/// The API reports neither a total nor a "has more" flag.
+async fn list_all(client: &Client, token: &str, tenant: &str) -> Result<Vec<CloudSession>, CloudError> {
+    let mut out = Vec::new();
+    let mut ids = HashSet::new();
+    let mut cursors = HashSet::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_PAGES {
+        let body = invoke(client, token, tenant, &page_path(cursor.as_deref()), json!({ "_method": "GET", "limit": PAGE_SIZE }), json!({})).await?;
+        for item in body.get("sessions").and_then(Value::as_array).into_iter().flatten() {
+            if let Some(s) = session_of(item) {
+                if ids.insert(s.id.clone()) {
+                    out.push(s);
+                }
+            }
+        }
+        match next_cursor(&body) {
+            // a cursor seen before would loop forever
+            Some(c) if cursors.insert(c.clone()) => cursor = Some(c),
+            _ => break,
+        }
+    }
+    Ok(out)
 }
 
 fn token() -> String {
@@ -310,32 +371,7 @@ pub async fn list(base: &Path, account_id: &str) -> Result<Vec<CloudSession>, Cl
     agent.wait_ready().await?;
     let (id_token, tenant) = agent.sncs().await?;
     let client = Client::builder().timeout(Duration::from_secs(60)).build().map_err(|e| CloudError::Api(e.to_string()))?;
-    let body = invoke(
-        &client,
-        &id_token,
-        &tenant,
-        "api/sessions",
-        json!({ "_method": "GET", "limit": "100" }),
-        json!({}),
-    )
-    .await?;
-    let items = body.get("sessions").and_then(Value::as_array).cloned().unwrap_or_default();
-    let mut out = Vec::new();
-    for item in items {
-        let id = item.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
-        if id.is_empty() {
-            continue;
-        }
-        out.push(CloudSession {
-            id,
-            title: item.get("title").and_then(Value::as_str).unwrap_or("未命名会话").to_string(),
-            created_at: item.get("created_at").and_then(Value::as_f64).unwrap_or(0.0),
-            updated_at: item.get("updated_at").and_then(Value::as_f64).unwrap_or(0.0),
-            message_count: item.get("message_count").and_then(Value::as_i64).unwrap_or(0),
-            archived: item.get("archived").and_then(Value::as_bool).unwrap_or(false),
-        });
-    }
-    Ok(out)
+    list_all(&client, &id_token, &tenant).await
 }
 
 fn message_text(content: &Value) -> String {
@@ -361,35 +397,7 @@ pub async fn export(base: &Path, account_id: &str, ids: &[String], format: &str)
     agent.wait_ready().await?;
     let (id_token, tenant) = agent.sncs().await?;
     let client = Client::builder().timeout(Duration::from_secs(90)).build().map_err(|e| CloudError::Api(e.to_string()))?;
-    let list_body = invoke(
-        &client,
-        &id_token,
-        &tenant,
-        "api/sessions",
-        json!({ "_method": "GET", "limit": "100" }),
-        json!({}),
-    )
-    .await?;
-    let all: Vec<CloudSession> = list_body
-        .get("sessions")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    let id = item.get("id").and_then(Value::as_str)?.to_string();
-                    Some(CloudSession {
-                        id,
-                        title: item.get("title").and_then(Value::as_str).unwrap_or("未命名会话").to_string(),
-                        created_at: item.get("created_at").and_then(Value::as_f64).unwrap_or(0.0),
-                        updated_at: item.get("updated_at").and_then(Value::as_f64).unwrap_or(0.0),
-                        message_count: item.get("message_count").and_then(Value::as_i64).unwrap_or(0),
-                        archived: item.get("archived").and_then(Value::as_bool).unwrap_or(false),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let all = list_all(&client, &id_token, &tenant).await?;
     let selected: Vec<CloudSession> = if ids.is_empty() {
         all
     } else {
@@ -404,6 +412,7 @@ pub async fn export(base: &Path, account_id: &str, ids: &[String], format: &str)
     let dir = switcher::app_dir().join("exports").join(&stamp);
     fs::create_dir_all(&dir)?;
     let mut messages_total = 0usize;
+    let mut truncated = Vec::new();
     let mut docs: Vec<(String, Value)> = Vec::new();
 
     for session in &selected {
@@ -417,6 +426,9 @@ pub async fn export(base: &Path, account_id: &str, ids: &[String], format: &str)
         )
         .await?;
         let messages = body.get("messages").and_then(Value::as_array).cloned().unwrap_or_default();
+        if next_cursor(&body).is_some() || messages.len() >= MESSAGE_LIMIT {
+            truncated.push(session.id.clone());
+        }
         messages_total += messages.len();
         docs.push((session.id.clone(), json!({ "session": session, "messages": messages })));
     }
@@ -427,7 +439,7 @@ pub async fn export(base: &Path, account_id: &str, ids: &[String], format: &str)
             let s = &doc["session"];
             text.push_str(&format!(
                 "# {}\n\n- 会话 ID: {}\n- 消息数: {}\n- 更新时间: {}\n\n",
-                s.get("title").and_then(Value::as_str).unwrap_or("未命名会话"),
+                s.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).unwrap_or("未命名会话"),
                 s.get("id").and_then(Value::as_str).unwrap_or_default(),
                 s.get("message_count").and_then(Value::as_i64).unwrap_or(0),
                 s.get("updated_at").and_then(Value::as_f64).map(|t| t.to_string()).unwrap_or_else(|| "—".into()),
@@ -440,13 +452,13 @@ pub async fn export(base: &Path, account_id: &str, ids: &[String], format: &str)
             text.push_str("\n---\n\n");
         }
         fs::write(dir.join("sessions.md"), text)?;
-        Ok(CloudExport { path: dir.join("sessions.md").display().to_string(), sessions: docs.len(), messages: messages_total })
+        Ok(CloudExport { path: dir.join("sessions.md").display().to_string(), sessions: docs.len(), messages: messages_total, truncated })
     } else {
         let count = docs.len();
         let values: Vec<Value> = docs.into_iter().map(|(_, v)| v).collect();
         let path = dir.join("sessions.json");
         fs::write(&path, serde_json::to_string_pretty(&Value::Array(values)).unwrap_or_default())?;
-        Ok(CloudExport { path: path.display().to_string(), sessions: count, messages: messages_total })
+        Ok(CloudExport { path: path.display().to_string(), sessions: count, messages: messages_total, truncated })
     }
 }
 
@@ -549,6 +561,34 @@ async fn message_count(client: &Client, token: &str, tenant: &str, session_id: &
     Ok(body.get("messages").and_then(Value::as_array).map(|a| a.len()).unwrap_or(0))
 }
 
+/// Copy one session's events into a new session on the target. On failure
+/// the half-built session is deleted; if that fails too, its id comes back
+/// with the error so the user can be told to remove it.
+async fn copy_one(client: &Client, token: &str, tenant: &str, source_id: &str, events: Vec<Value>) -> Result<CloudImport, (CloudError, Option<String>)> {
+    let target_id = create_session(client, token, tenant).await.map_err(|e| (e, None))?;
+    let mut uploaded = 0usize;
+    let mut failed: Option<CloudError> = None;
+    for event in events {
+        let Some(event) = rewrite_event(event, source_id, &target_id) else {
+            continue;
+        };
+        if let Err(e) = upload_event(client, token, tenant, &target_id, &event).await {
+            failed = Some(e);
+            break;
+        }
+        uploaded += 1;
+    }
+    if failed.is_none() && uploaded == 0 {
+        failed = Some(CloudError::NothingUploaded);
+    }
+    if let Some(e) = failed {
+        let left = delete_session(client, token, tenant, &target_id).await.err().map(|_| target_id);
+        return Err((e, left));
+    }
+    let messages = message_count(client, token, tenant, &target_id).await.unwrap_or(0);
+    Ok(CloudImport { source_session_id: source_id.to_string(), target_session_id: target_id, events: uploaded, messages })
+}
+
 /// Copy sessions from one account to another. The target gets new session ids
 /// and new message ids' container; the source sessions are not modified.
 pub async fn import_to_account(
@@ -580,36 +620,14 @@ pub async fn import_to_account(
     let (target_token, target_tenant) = target.sncs().await?;
     let mut imports = Vec::new();
     for (source_id, events) in sources {
-        let target_id = create_session(&client, &target_token, &target_tenant).await?;
-        let mut uploaded = 0usize;
-        let mut failed: Option<CloudError> = None;
-        for event in events {
-            let Some(event) = rewrite_event(event, &source_id, &target_id) else {
-                continue;
-            };
-            match upload_event(&client, &target_token, &target_tenant, &target_id, &event).await {
-                Ok(()) => uploaded += 1,
-                Err(e) => {
-                    failed = Some(e);
-                    break;
-                }
+        match copy_one(&client, &target_token, &target_tenant, &source_id, events).await {
+            Ok(done) => imports.push(done),
+            // nothing moved and nothing left over: the plain error says it all
+            Err((e, None)) if imports.is_empty() => return Err(e),
+            Err((e, left_behind)) => {
+                return Err(CloudError::ImportFailed { done: imports.len(), left_behind, detail: e.to_string() });
             }
         }
-        if let Some(e) = failed {
-            let _ = delete_session(&client, &target_token, &target_tenant, &target_id).await;
-            return Err(e);
-        }
-        if uploaded == 0 {
-            let _ = delete_session(&client, &target_token, &target_tenant, &target_id).await;
-            return Err(CloudError::NothingUploaded);
-        }
-        let messages = message_count(&client, &target_token, &target_tenant, &target_id).await.unwrap_or(0);
-        imports.push(CloudImport {
-            source_session_id: source_id,
-            target_session_id: target_id,
-            events: uploaded,
-            messages,
-        });
     }
     Ok(imports)
 }
@@ -642,5 +660,26 @@ mod tests {
         assert!(!dst.join("sessions").exists());
         assert!(!dst.join("big.db").exists());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn page_paths_encode_the_cursor() {
+        assert_eq!(page_path(None), "api/sessions");
+        assert_eq!(page_path(Some("WzE3OTU+/w==")), "api/sessions/page/WzE3OTU%2B%2Fw%3D%3D");
+    }
+
+    #[test]
+    fn paging_ends_on_a_null_empty_or_missing_cursor() {
+        assert_eq!(next_cursor(&json!({ "nextCursor": "abc" })).as_deref(), Some("abc"));
+        assert_eq!(next_cursor(&json!({ "nextCursor": null })), None);
+        assert_eq!(next_cursor(&json!({ "nextCursor": "" })), None);
+        assert_eq!(next_cursor(&json!({ "sessions": [] })), None);
+    }
+
+    #[test]
+    fn sessions_need_an_id_and_untitled_ones_stay_untitled() {
+        assert!(session_of(&json!({ "title": "x" })).is_none());
+        let s = session_of(&json!({ "id": "s1", "message_count": 3 })).unwrap();
+        assert_eq!((s.id.as_str(), s.title.as_str(), s.message_count), ("s1", "", 3));
     }
 }

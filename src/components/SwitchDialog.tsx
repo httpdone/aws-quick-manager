@@ -3,7 +3,7 @@ import { Account, DesktopStatus, SwitchReport, forceQuitDesktop, switchAccount }
 import { useT } from "../i18n";
 import { errorCode, errorText } from "../lib/errors";
 import { hue } from "../lib/format";
-import { getLaunchAfterSwitch, setLaunchAfterSwitch } from "../lib/prefs";
+import { getForceQuit, getLaunchAfterSwitch, setForceQuit, setLaunchAfterSwitch } from "../lib/prefs";
 import { who } from "../lib/status";
 import Icon from "./Icon";
 import Modal from "./Modal";
@@ -28,7 +28,13 @@ export default function SwitchDialog({ target, current, desktop, onClose, onDone
   const [stage, setStage] = useState("");
   const [message, setMessage] = useState("");
   const [launch, setLaunch] = useState(getLaunchAfterSwitch);
+  const [forceFirst, setForceFirst] = useState(getForceQuit);
   const running = !!desktop?.running;
+
+  const changeForce = (on: boolean) => {
+    setForceFirst(on);
+    setForceQuit(on);
+  };
 
   const changeLaunch = (on: boolean) => {
     setLaunch(on);
@@ -57,7 +63,7 @@ export default function SwitchDialog({ target, current, desktop, onClose, onDone
     { icon: "refresh" as const, text: t.switcher.stepRefresh },
     {
       icon: "power" as const,
-      text: running ? t.switcher.stepQuit : t.switcher.stepSkipQuit,
+      text: !running ? t.switcher.stepSkipQuit : forceFirst ? t.switcher.stepForceQuit : t.switcher.stepQuit,
     },
     { icon: "save" as const, text: target.on_desktop ? t.switcher.stepWriteCreds : t.switcher.stepWriteNew },
     { icon: "zap" as const, text: launch ? t.switcher.stepLaunch : t.switcher.stepNoLaunch },
@@ -69,7 +75,7 @@ export default function SwitchDialog({ target, current, desktop, onClose, onDone
         <button className="btn ghost" onClick={onClose}>
           {t.common.cancel}
         </button>
-        <button className="btn primary" onClick={() => run(false)} autoFocus>
+        <button className="btn primary" onClick={() => run(running && forceFirst)} autoFocus>
           <Icon name="swap" size={14} />
           {t.common.switch}
         </button>
@@ -168,6 +174,15 @@ export default function SwitchDialog({ target, current, desktop, onClose, onDone
             <small>{desktop && !desktop.installed ? t.switcher.noInstall : t.switcher.defaultInSettings}</small>
           </div>
           <Toggle checked={launch} onChange={changeLaunch} label={t.switcher.launchAfter} />
+        </div>
+      )}
+      {phase === "confirm" && running && (
+        <div className="optionRow">
+          <div>
+            <b>{t.switcher.forceFirst}</b>
+            <small>{t.switcher.forceFirstDesc}</small>
+          </div>
+          <Toggle checked={forceFirst} onChange={changeForce} label={t.switcher.forceFirst} />
         </div>
       )}
     </Modal>

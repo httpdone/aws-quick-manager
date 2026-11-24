@@ -201,6 +201,10 @@ impl From<CloudError> for AppError {
             CloudError::NothingSelected => AppError::new("sessions.nothing_selected", message),
             CloudError::NoEvents(id) => AppError::new("sessions.no_events", message).with("id", id),
             CloudError::NothingUploaded => AppError::new("sessions.nothing_uploaded", message),
+            CloudError::ImportFailed { done, left_behind, detail: d } => AppError::new("sessions.import_failed", message)
+                .with("done", done)
+                .with("left", left_behind.unwrap_or_default())
+                .with("detail", d),
             CloudError::Io(io) => detail("export.write_failed", message, io.to_string()),
         }
     }

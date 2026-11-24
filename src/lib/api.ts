@@ -150,6 +150,8 @@ export interface CloudExport {
   path: string;
   sessions: number;
   messages: number;
+  /** sessions whose messages may be cut off at the 100-message limit */
+  truncated: string[];
 }
 
 export interface CloudImport {

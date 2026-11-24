@@ -137,6 +137,7 @@ export default function SessionsPage({ accounts }: Props) {
         label: t.common.revealInFolder,
         run: () => revealItemInDir(result.path).catch((e) => toast(errorText(t, e), "bad")),
       });
+      if ("truncated" in result && result.truncated.length > 0) toast(t.sessions.truncated(result.truncated.length), "info");
     } catch (e) {
       toast(t.sessions.exportFailed(errorText(t, e)), "bad");
     } finally {
