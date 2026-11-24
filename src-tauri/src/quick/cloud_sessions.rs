@@ -1,20 +1,25 @@
-//! Cloud session browsing through the bundled Quick agent.
+//! Cloud sessions through the bundled Quick agent.
 //!
 //! Quick's renderer reaches session storage through an `invokeAgent` qbs-event
 //! on the tenant data plane. The request needs an SNCS `id_token`, which only
-//! the bundled `quickwork-agent` can mint for an account. So for each request
-//! this module:
+//! the bundled `quickwork-agent` can mint for an account. This module keeps one
+//! account's outpost alive (see `CachedAgent`) and, on first use:
 //!
 //! 1. copies the account's profile into a temporary base,
 //! 2. starts `quickwork-agent --outpost-only` with its own instance token,
 //! 3. reads `/auth/sncs-session`,
-//! 4. calls `invokeAgent` (`api/sessions`, `store/sessions/<id>/messages`),
-//! 5. stops the agent and removes the temporary base.
+//! 4. calls `invokeAgent` (`api/sessions`, `store/sessions/<id>/messages`, ...),
+//! 5. reuses the agent until the account changes, an account's sign-in or
+//!    files change (`invalidate`), or it is idle,
+//! 6. stops it with every process it started and removes the temporary base.
 //!
-//! It is read-only against the account's cloud sessions; the only local writes
-//! are the temporary copy and the export file.
+//! Listing, previewing and exporting only read. The writes are explicit: moving
+//! sessions to another account (new sessions there, the source untouched) and
+//! deleting sessions the user picked. Local writes are the temporary copy and
+//! the export files.
 
 use super::device;
+use crate::error::AppError;
 use super::profiles;
 use super::switcher;
 use base64::Engine;
@@ -27,7 +32,9 @@ use std::io::Write;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CloudError {
@@ -45,6 +52,10 @@ pub enum CloudError {
     Session(String),
     #[error("云端请求失败：{0}")]
     Api(String),
+    #[error("云端拒绝了登录凭据：{0}")]
+    Unauthorized(String),
+    #[error("会话 id 不合法：{0}")]
+    BadId(String),
     #[error("没有可导出的会话")]
     NothingToExport,
     #[error("没有选择要导入的会话")]
@@ -83,6 +94,214 @@ const PAGE_SIZE: &str = "100";
 const MAX_PAGES: usize = 500;
 /// Messages read per session (that endpoint isn't paged here).
 const MESSAGE_LIMIT: usize = 100;
+
+/// Keep one account's outpost alive between requests. Starting the Python
+/// backend and copying the profile costs several seconds, so paging through a
+/// conversation must not do it per page.
+const AGENT_IDLE: Duration = Duration::from_secs(5 * 60);
+/// Temporary bases this old are left over from a crash.
+const STALE_BASE: Duration = Duration::from_secs(24 * 60 * 60);
+
+struct CachedAgent {
+    account_id: String,
+    generation: u64,
+    /// the agent's own sign-in was refused; start a new one next time
+    stale: bool,
+    agent: Agent,
+    id_token: String,
+    tenant: String,
+    usable_until: f64,
+    last_used: Instant,
+}
+
+static AGENT: OnceLock<tokio::sync::Mutex<Option<CachedAgent>>> = OnceLock::new();
+static WATCHDOG: AtomicBool = AtomicBool::new(false);
+/// Bumped when an account's sign-in or files change; an agent started under
+/// an older generation is replaced on its next use.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+/// The running agent's pid, so exit can end it without waiting for the lock.
+static AGENT_PID: AtomicU32 = AtomicU32::new(0);
+
+fn cache() -> &'static tokio::sync::Mutex<Option<CachedAgent>> {
+    AGENT.get_or_init(|| tokio::sync::Mutex::new(None))
+}
+
+fn now_secs() -> f64 {
+    chrono::Utc::now().timestamp() as f64
+}
+
+/// Unix seconds from seconds, milliseconds or an RFC 3339 string; 0 when unknown.
+fn as_secs(v: Option<&Value>) -> f64 {
+    let n = match v {
+        Some(Value::Number(n)) => n.as_f64().unwrap_or(0.0),
+        Some(Value::String(s)) => {
+            let s = s.trim();
+            s.parse::<f64>()
+                .ok()
+                .or_else(|| chrono::DateTime::parse_from_rfc3339(s).ok().map(|t| t.timestamp_millis() as f64 / 1000.0))
+                .unwrap_or(0.0)
+        }
+        _ => 0.0,
+    };
+    // no date in seconds is this large; it is milliseconds
+    if n > 1e12 { n / 1000.0 } else { n }
+}
+
+impl CachedAgent {
+    async fn refresh_if_needed(&mut self) -> Result<(), CloudError> {
+        if now_secs() + 60.0 < self.usable_until {
+            return Ok(());
+        }
+        self.refresh().await
+    }
+
+    async fn refresh(&mut self) -> Result<(), CloudError> {
+        let (id_token, tenant, usable_until) = self.agent.sncs().await?;
+        self.id_token = id_token;
+        self.tenant = tenant;
+        self.usable_until = usable_until;
+        Ok(())
+    }
+
+    /// Run a request with the current token. When the cloud refuses it, get
+    /// a new token and try once more; refused again, the agent is replaced on
+    /// the next request.
+    async fn call<T, F, Fut>(&mut self, f: F) -> Result<T, CloudError>
+    where
+        F: Fn(String, String) -> Fut,
+        Fut: Future<Output = Result<T, CloudError>>,
+    {
+        match f(self.id_token.clone(), self.tenant.clone()).await {
+            Err(CloudError::Unauthorized(_)) => {
+                self.refresh().await?;
+                let again = f(self.id_token.clone(), self.tenant.clone()).await;
+                if matches!(again, Err(CloudError::Unauthorized(_))) {
+                    self.stale = true;
+                }
+                again
+            }
+            other => other,
+        }
+    }
+}
+
+/// Dropping an agent kills its processes and deletes its files, which blocks;
+/// keep that off the async workers.
+fn retire<T: Send + 'static>(old: T) {
+    tokio::task::spawn_blocking(move || drop(old));
+}
+
+/// Remove temporary bases a crashed run left behind.
+fn remove_stale_bases() {
+    let Ok(entries) = fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with("aqm-cloud-") {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > STALE_BASE);
+        if old {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+fn start_watchdog() {
+    if WATCHDOG.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    tokio::task::spawn_blocking(remove_stale_bases);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            let mut slot = cache().lock().await;
+            if slot.as_ref().is_some_and(|c| c.last_used.elapsed() >= AGENT_IDLE) {
+                retire(slot.take());
+            }
+        }
+    });
+}
+
+/// Reuse the account's outpost; start a new one for another account, after
+/// `invalidate`, or when the old one is idle or refused.
+async fn acquire(account_id: &str) -> Result<tokio::sync::MutexGuard<'static, Option<CachedAgent>>, CloudError> {
+    start_watchdog();
+    let generation = GENERATION.load(Ordering::SeqCst);
+    let mut slot = cache().lock().await;
+    let replace = match slot.as_ref() {
+        None => true,
+        Some(c) => {
+            c.account_id != account_id || c.generation != generation || c.stale || c.last_used.elapsed() >= AGENT_IDLE
+        }
+    };
+    if replace {
+        retire(slot.take());
+        let id = account_id.to_string();
+        let agent = tokio::task::spawn_blocking(move || Agent::start(&id))
+            .await
+            .map_err(|e| CloudError::Spawn(e.to_string()))??;
+        let ready = match agent.wait_ready().await {
+            Ok(()) => agent.sncs().await,
+            Err(e) => Err(e),
+        };
+        let (id_token, tenant, usable_until) = match ready {
+            Ok(v) => v,
+            Err(e) => {
+                retire(agent);
+                return Err(e);
+            }
+        };
+        *slot = Some(CachedAgent {
+            account_id: account_id.to_string(),
+            generation,
+            stale: false,
+            agent,
+            id_token,
+            tenant,
+            usable_until,
+            last_used: Instant::now(),
+        });
+    }
+    let cached = slot.as_mut().expect("just inserted");
+    cached.refresh_if_needed().await?;
+    cached.last_used = Instant::now();
+    Ok(slot)
+}
+
+/// Stop the cached outpost and wait until it is gone.
+pub async fn shutdown() {
+    let old = cache().lock().await.take();
+    if let Some(old) = old {
+        let _ = tokio::task::spawn_blocking(move || drop(old)).await;
+    }
+}
+
+/// An account was switched, signed in again, removed or restored: the cached
+/// outpost runs on the old files, so the next request starts a new one.
+pub fn invalidate() {
+    GENERATION.fetch_add(1, Ordering::SeqCst);
+}
+
+/// For app exit: never wait for a request that holds the outpost (a transfer
+/// can take a minute); end its processes directly instead.
+pub fn shutdown_now() {
+    if let Some(lock) = AGENT.get()
+        && let Ok(mut slot) = lock.try_lock()
+    {
+        drop(slot.take());
+        return;
+    }
+    let pid = AGENT_PID.swap(0, Ordering::SeqCst);
+    if pid != 0 {
+        kill_pid_tree(pid);
+    }
+}
 
 /// `api/sessions` for the first page, `api/sessions/page/<cursor>` after.
 fn page_path(cursor: Option<&str>) -> String {
@@ -267,6 +486,9 @@ impl Agent {
             command.process_group(0);
         }
         let mut child = command.spawn().map_err(|e| CloudError::Spawn(e.to_string()))?;
+        #[cfg(windows)]
+        job::adopt(&child);
+        AGENT_PID.store(child.id(), Ordering::SeqCst);
         if let Some(stdin) = child.stdin.as_mut() {
             let _ = writeln!(stdin, "{token}");
         }
@@ -291,7 +513,7 @@ impl Agent {
         Err(CloudError::NotReady("health check timed out".into()))
     }
 
-    async fn sncs(&self) -> Result<(String, String), CloudError> {
+    async fn sncs(&self) -> Result<(String, String, f64), CloudError> {
         let client = Client::builder().timeout(Duration::from_secs(20)).build().map_err(|e| CloudError::Session(e.to_string()))?;
         let url = format!("http://127.0.0.1:{}/auth/sncs-session", self.port);
         let r = client
@@ -308,34 +530,98 @@ impl Agent {
         let v: Value = serde_json::from_str(&text).map_err(|e| CloudError::Session(e.to_string()))?;
         let id_token = v.get("id_token").and_then(Value::as_str).unwrap_or_default().to_string();
         let tenant = v.get("tenant_url").and_then(Value::as_str).unwrap_or_default().trim_end_matches('/').to_string();
+        let usable_until = Some(as_secs(v.get("usable_until"))).filter(|t| *t > 0.0).unwrap_or_else(|| now_secs() + 300.0);
         if id_token.is_empty() || tenant.is_empty() {
             return Err(CloudError::Session("response is missing id_token or tenant_url".into()));
         }
-        Ok((id_token, tenant))
+        Ok((id_token, tenant, usable_until))
     }
 }
 
-/// End the agent and everything it started (it may launch helpers such as
-/// its sandbox). Killing only the agent would leave those running.
-fn kill_tree(child: &mut Child) {
+/// End a process and everything it started (the agent launches helpers
+/// such as its sandbox). Killing only the agent would leave those running.
+fn kill_pid_tree(pid: u32) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         let _ = Command::new("taskkill")
-            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
             .creation_flags(0x0800_0000)
             .output();
     }
     #[cfg(unix)]
     {
-        let _ = Command::new("kill").args(["-KILL", "--", &format!("-{}", child.id())]).output();
+        // the agent leads its own process group
+        let _ = Command::new("kill").args(["-KILL", "--", &format!("-{pid}")]).output();
     }
+}
+
+fn kill_tree(child: &mut Child) {
+    kill_pid_tree(child.id());
     let _ = child.kill();
     let _ = child.wait();
 }
 
+/// Windows: the agent joins a job that is closed, and its processes ended,
+/// when this process ends, so it can't outlive the manager even after a crash,
+/// a kill from Task Manager or the updater closing the app.
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::AsRawHandle;
+    use std::sync::OnceLock;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_BASIC_LIMIT_INFORMATION,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject,
+    };
+    use windows::core::PCWSTR;
+
+    struct Job(HANDLE);
+    // a kernel handle, usable from any thread
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    static JOB: OnceLock<Option<Job>> = OnceLock::new();
+
+    fn job() -> Option<&'static Job> {
+        JOB.get_or_init(|| {
+            let info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+                BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION {
+                    LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            // SAFETY: a new unnamed job; `info` outlives the call. The handle is
+            // never closed: the system closes it when this process ends.
+            unsafe {
+                let handle = CreateJobObjectW(None, PCWSTR::null()).ok()?;
+                SetInformationJobObject(
+                    handle,
+                    JobObjectExtendedLimitInformation,
+                    std::ptr::from_ref(&info).cast(),
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+                .ok()?;
+                Some(Job(handle))
+            }
+        })
+        .as_ref()
+    }
+
+    pub fn adopt(child: &std::process::Child) {
+        if let Some(job) = job() {
+            // SAFETY: the child's process handle is open while `child` lives
+            unsafe {
+                let _ = AssignProcessToJobObject(job.0, HANDLE(child.as_raw_handle()));
+            }
+        }
+    }
+}
+
 impl Drop for Agent {
     fn drop(&mut self) {
+        let _ = AGENT_PID.compare_exchange(self.child.id(), 0, Ordering::SeqCst, Ordering::SeqCst);
         kill_tree(&mut self.child);
         // a process that just died can hold its files for a moment on Windows
         for _ in 0..5 {
@@ -366,7 +652,8 @@ fn body_of(resp: &Value) -> Result<Value, CloudError> {
             other => other,
         };
         if status >= 400 {
-            return Err(CloudError::Api(format!("HTTP {status}: {}", serde_json::to_string(&body).unwrap_or_default().chars().take(300).collect::<String>())));
+            let text = format!("HTTP {status}: {}", serde_json::to_string(&body).unwrap_or_default().chars().take(300).collect::<String>());
+            return Err(if status == 401 || status == 403 { CloudError::Unauthorized(text) } else { CloudError::Api(text) });
         }
         return Ok(body);
     }
@@ -391,7 +678,9 @@ async fn invoke(client: &Client, id_token: &str, tenant: &str, path: &str, query
     let status = r.status();
     let text = r.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(CloudError::Api(format!("qbs-event HTTP {status}: {}", text.chars().take(300).collect::<String>())));
+        let text = format!("qbs-event HTTP {status}: {}", text.chars().take(300).collect::<String>());
+        let refused = status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN;
+        return Err(if refused { CloudError::Unauthorized(text) } else { CloudError::Api(text) });
     }
     let value: Value = serde_json::from_str(&text).map_err(|e| CloudError::Api(e.to_string()))?;
     body_of(&value)
@@ -405,13 +694,43 @@ fn uuid_like() -> String {
     format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct CloudSessionPage {
+    pub sessions: Vec<CloudSession>,
+    /// pass back for the next page; none on the last
+    pub next_cursor: Option<String>,
+}
+
+/// One page of the account's sessions, newest first, for the list view.
+pub async fn list_page(account_id: &str, cursor: Option<String>, limit: usize) -> Result<CloudSessionPage, CloudError> {
+    let mut slot = acquire(account_id).await?;
+    let cached = slot.as_mut().expect("acquire inserts");
+    let client = Client::builder().timeout(Duration::from_secs(60)).build().map_err(|e| CloudError::Api(e.to_string()))?;
+    let path = page_path(cursor.as_deref().filter(|c| !c.is_empty()));
+    let query = json!({ "_method": "GET", "limit": limit.clamp(1, 100).to_string() });
+    let body = cached
+        .call(|token, tenant| {
+            let (client, path, query) = (&client, path.clone(), query.clone());
+            async move { invoke(client, &token, &tenant, &path, query, json!({})).await }
+        })
+        .await?;
+    let sessions = body.get("sessions").and_then(Value::as_array).into_iter().flatten().filter_map(session_of).collect();
+    // a cursor that points back at itself would page forever
+    let next_cursor = next_cursor(&body).filter(|c| Some(c.as_str()) != cursor.as_deref());
+    Ok(CloudSessionPage { sessions, next_cursor })
+}
+
 pub async fn list(base: &Path, account_id: &str) -> Result<Vec<CloudSession>, CloudError> {
     let _ = base;
-    let agent = Agent::start(account_id)?;
-    agent.wait_ready().await?;
-    let (id_token, tenant) = agent.sncs().await?;
+    let mut slot = acquire(account_id).await?;
+    let cached = slot.as_mut().expect("acquire inserts");
     let client = Client::builder().timeout(Duration::from_secs(60)).build().map_err(|e| CloudError::Api(e.to_string()))?;
-    list_all(&client, &id_token, &tenant).await
+    cached
+        .call(|token, tenant| {
+            let client = &client;
+            async move { list_all(client, &token, &tenant).await }
+        })
+        .await
 }
 
 fn message_text(content: &Value) -> String {
@@ -433,11 +752,17 @@ fn message_text(content: &Value) -> String {
 
 pub async fn export(base: &Path, account_id: &str, ids: &[String], format: &str, lang: &str) -> Result<CloudExport, CloudError> {
     let _ = base;
-    let agent = Agent::start(account_id)?;
-    agent.wait_ready().await?;
-    let (id_token, tenant) = agent.sncs().await?;
+    let mut slot = acquire(account_id).await?;
+    let cached = slot.as_mut().expect("acquire inserts");
     let client = Client::builder().timeout(Duration::from_secs(90)).build().map_err(|e| CloudError::Api(e.to_string()))?;
-    let all = list_all(&client, &id_token, &tenant).await?;
+    let all = cached
+        .call(|token, tenant| {
+            let client = &client;
+            async move { list_all(client, &token, &tenant).await }
+        })
+        .await?;
+    let id_token = cached.id_token.clone();
+    let tenant = cached.tenant.clone();
     let selected: Vec<CloudSession> = if ids.is_empty() {
         all
     } else {
@@ -643,28 +968,29 @@ pub async fn import_to_account(
     if ids.is_empty() {
         return Err(CloudError::NothingSelected);
     }
+    for id in ids {
+        check_id(id)?;
+    }
 
-    // read the source strictly read-only
-    let source = Agent::start(source_account)?;
-    source.wait_ready().await?;
-    let (source_token, source_tenant) = source.sncs().await?;
+    // read the source strictly read-only, then hand the cache to the target
+    let mut source_slot = acquire(source_account).await?;
+    let source = source_slot.as_mut().expect("acquire inserts");
     let client = Client::builder().timeout(Duration::from_secs(90)).build().map_err(|e| CloudError::Api(e.to_string()))?;
     let mut sources: Vec<(String, Vec<Value>)> = Vec::new();
     for id in ids {
-        let events = fetch_events(&client, &source_token, &source_tenant, id).await?;
+        let events = fetch_events(&client, &source.id_token, &source.tenant, id).await?;
         if events.is_empty() {
             return Err(CloudError::NoEvents(id.clone()));
         }
         sources.push((id.clone(), events));
     }
-    drop(source);
+    drop(source_slot);
 
-    let target = Agent::start(target_account)?;
-    target.wait_ready().await?;
-    let (target_token, target_tenant) = target.sncs().await?;
+    let mut target_slot = acquire(target_account).await?;
+    let target = target_slot.as_mut().expect("acquire inserts");
     let mut imports = Vec::new();
     for (source_id, events) in sources {
-        match copy_one(&client, &target_token, &target_tenant, &source_id, events).await {
+        match copy_one(&client, &target.id_token, &target.tenant, &source_id, events).await {
             Ok(done) => imports.push(done),
             // nothing moved and nothing left over: the plain error says it all
             Err((e, None)) if imports.is_empty() => return Err(e),
@@ -704,6 +1030,37 @@ mod tests {
         assert!(!dst.join("sessions").exists());
         assert!(!dst.join("big.db").exists());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn messages_are_flattened_for_the_preview() {
+        let m = json!({
+            "id": "m1",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "hi" }, { "type": "text", "text": "there" }],
+            "timestamp": 1_795_500_000_000u64,
+            "toolCalls": [{}, {}]
+        });
+        let out = message_of(&m, "s1");
+        assert_eq!((out.id.as_str(), out.content.as_str(), out.timestamp, out.tool_calls), ("m1", "hi\nthere", 1_795_500_000.0, 2));
+
+        let plain = json!({ "role": "user", "content": "same", "timestamp": "2026-11-24T08:00:00Z" });
+        let (a, b) = (message_of(&plain, "s1"), message_of(&plain, "s1"));
+        assert_eq!(a.id, b.id);
+        assert!(a.id.starts_with("s1-") && a.timestamp > 1_700_000_000.0);
+        assert_eq!(message_of(&json!({ "role": "user", "content": null, "text": "t" }), "s1").content, "t");
+        assert_eq!(as_secs(Some(&json!(1_795_500_000.5))), 1_795_500_000.5);
+        assert_eq!(as_secs(None), 0.0);
+    }
+
+    #[test]
+    fn session_ids_cannot_leave_their_path() {
+        for good in ["sess-1a2b_C3", "a:b.c", "0f8fad5b-d9cb-469f-a165-70867728950e"] {
+            assert!(check_id(good).is_ok(), "{good}");
+        }
+        for bad in ["", ".", "..", "a/b", "a\\b", "a?b", "a#b", "a%2Fb", "a b"] {
+            assert!(check_id(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
@@ -758,4 +1115,183 @@ mod tests {
         let out = rewrite_event(json!({ "type": "x", "session_id": "other" }), "src", "dst").unwrap();
         assert_eq!(out["session_id"], "other");
     }
+}
+
+/// A message as the preview shows it: text flattened, time in unix seconds,
+/// and always an id.
+#[derive(Debug, Clone, Serialize)]
+pub struct CloudMessage {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    pub timestamp: f64,
+    pub attachments: usize,
+    pub tool_calls: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CloudMessagePage {
+    pub messages: Vec<CloudMessage>,
+    pub next_token: Option<String>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CloudDelete {
+    pub session_id: String,
+    pub success: bool,
+    pub error: Option<AppError>,
+}
+
+impl CloudDelete {
+    fn done(id: &str) -> Self {
+        Self { session_id: id.to_string(), success: true, error: None }
+    }
+
+    fn failed(id: &str, error: AppError) -> Self {
+        Self { session_id: id.to_string(), success: false, error: Some(error) }
+    }
+}
+
+fn message_of(m: &Value, session_id: &str) -> CloudMessage {
+    let role = m.get("role").and_then(Value::as_str).unwrap_or("message").to_string();
+    let content = ["content", "full_content", "text"]
+        .iter()
+        .filter_map(|k| m.get(*k))
+        .filter(|v| !v.is_null())
+        .map(message_text)
+        .find(|s| !s.trim().is_empty())
+        .unwrap_or_default();
+    let timestamp = as_secs(m.get("timestamp").or_else(|| m.get("created_at")));
+    let id = ["id", "message_id"]
+        .iter()
+        .filter_map(|k| m.get(*k).and_then(Value::as_str))
+        .find(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            // stable across pages, so a message seen twice is shown once
+            use sha1::Digest;
+            let digest = sha1::Sha1::digest(format!("{role}\0{timestamp}\0{content}").as_bytes());
+            format!("{session_id}-{}", &hex::encode(digest)[..16])
+        });
+    let count = |keys: &[&str]| keys.iter().filter_map(|k| m.get(*k).and_then(Value::as_array)).map(Vec::len).max().unwrap_or(0);
+    CloudMessage { id, role, content, timestamp, attachments: count(&["attachments"]), tool_calls: count(&["toolCalls", "tool_calls"]) }
+}
+
+/// Session ids go into request paths; anything that could step out of
+/// `api/sessions/<id>` is refused.
+fn check_id(id: &str) -> Result<(), CloudError> {
+    let ok = !id.is_empty()
+        && id.len() <= 200
+        && !id.chars().all(|c| c == '.')
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'));
+    if ok { Ok(()) } else { Err(CloudError::BadId(id.chars().take(80).collect())) }
+}
+
+/// One page of a conversation. `before` is the previous page's `next_token`.
+pub async fn messages(
+    _base: &Path,
+    account_id: &str,
+    session_id: &str,
+    before: Option<String>,
+    limit: usize,
+) -> Result<CloudMessagePage, CloudError> {
+    check_id(session_id)?;
+    let mut slot = acquire(account_id).await?;
+    let cached = slot.as_mut().expect("acquire inserts");
+    let client = Client::builder().timeout(Duration::from_secs(45)).build().map_err(|e| CloudError::Api(e.to_string()))?;
+    let mut query = json!({ "_method": "GET", "limit": limit.clamp(1, 100).to_string() });
+    if let Some(before) = before.filter(|s| !s.is_empty()) {
+        query["before"] = Value::String(before);
+    }
+    let path = format!("store/sessions/{session_id}/messages");
+    let body = cached
+        .call(|token, tenant| {
+            let (client, path, query) = (&client, path.clone(), query.clone());
+            async move { invoke(client, &token, &tenant, &path, query, json!({})).await }
+        })
+        .await?;
+    Ok(CloudMessagePage {
+        messages: body
+            .get("messages")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().map(|m| message_of(m, session_id)).collect())
+            .unwrap_or_default(),
+        next_token: body.get("next_token").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string),
+        has_more: body.get("has_more").and_then(Value::as_bool).unwrap_or(false),
+    })
+}
+
+/// Delete cloud sessions. Each session gets its own result. A reply without
+/// a verdict is checked against the session list afterwards; nothing is
+/// reported deleted that is still there.
+pub async fn delete(_base: &Path, account_id: &str, ids: &[String]) -> Result<Vec<CloudDelete>, CloudError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    for id in ids {
+        check_id(id)?;
+    }
+    let mut slot = acquire(account_id).await?;
+    let cached = slot.as_mut().expect("acquire inserts");
+    let client = Client::builder().timeout(Duration::from_secs(45)).build().map_err(|e| CloudError::Api(e.to_string()))?;
+    let mut out = Vec::new();
+    let mut unconfirmed = Vec::new();
+    for session_id in ids {
+        let path = format!("api/sessions/{session_id}");
+        let reply = cached
+            .call(|token, tenant| {
+                let (client, path) = (&client, path.clone());
+                async move { invoke(client, &token, &tenant, &path, json!({ "_method": "DELETE" }), json!({})).await }
+            })
+            .await;
+        match reply {
+            Ok(body) => match body.get("success").and_then(Value::as_bool) {
+                Some(true) => out.push(CloudDelete::done(session_id)),
+                Some(false) => {
+                    let detail = body.get("error").and_then(Value::as_str).unwrap_or_default();
+                    out.push(CloudDelete::failed(
+                        session_id,
+                        AppError::new("sessions.delete_refused", format!("云端没有删除这个会话：{detail}")).with("detail", detail),
+                    ));
+                }
+                None => {
+                    unconfirmed.push(out.len());
+                    out.push(CloudDelete::done(session_id));
+                }
+            },
+            Err(e) => out.push(CloudDelete::failed(session_id, AppError::from(e))),
+        }
+    }
+    if !unconfirmed.is_empty() {
+        let listed = cached
+            .call(|token, tenant| {
+                let client = &client;
+                async move { list_all(client, &token, &tenant).await }
+            })
+            .await;
+        match listed {
+            Ok(list) => {
+                let remaining: HashSet<&str> = list.iter().map(|s| s.id.as_str()).collect();
+                for i in unconfirmed {
+                    if remaining.contains(out[i].session_id.as_str()) {
+                        let id = out[i].session_id.clone();
+                        out[i] = CloudDelete::failed(&id, AppError::new("sessions.delete_not_done", "删除请求已发送，但会话仍在云端列表里"));
+                    }
+                }
+            }
+            Err(e) => {
+                let detail = AppError::from(e).message;
+                for i in unconfirmed {
+                    let id = out[i].session_id.clone();
+                    out[i] = CloudDelete::failed(
+                        &id,
+                        AppError::new("sessions.delete_unconfirmed", format!("删除后没能确认结果，请刷新列表：{detail}"))
+                            .with("detail", detail.clone()),
+                    );
+                }
+            }
+        }
+    }
+    Ok(out)
 }

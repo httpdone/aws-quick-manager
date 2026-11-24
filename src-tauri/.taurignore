@@ -1,0 +1,9 @@
+# `tauri dev` restarts the app when anything under src-tauri changes. These
+# are only read at build time, or written by the build itself (tauri-build
+# regenerates gen/ whenever cargo check/clippy/test runs its build script),
+# and on Windows an indexer or antivirus touching them was enough to restart.
+app-icon.svg
+icons/
+gen/
+build.rs
+Cargo.lock

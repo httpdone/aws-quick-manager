@@ -154,6 +154,29 @@ export interface CloudExport {
   truncated: string[];
 }
 
+/** A message as the backend flattens it (unix seconds, text only). */
+export interface CloudMessage {
+  id: string;
+  role: string;
+  content: string;
+  timestamp: number;
+  /** how many, cloud only */
+  attachments?: number;
+  tool_calls?: number;
+}
+
+export interface CloudMessagePage {
+  messages: CloudMessage[];
+  next_token: string | null;
+  has_more: boolean;
+}
+
+export interface CloudDelete {
+  session_id: string;
+  success: boolean;
+  error: AppError | null;
+}
+
 export interface CloudImport {
   source_session_id: string;
   target_session_id: string;
@@ -223,10 +246,24 @@ export const listSessions = (accountId: string) => invoke<SessionInfo[]>("list_s
 export const exportSessions = (accountId: string, ids: string[], format: "md" | "json", lang: "zh" | "en") =>
   invoke<SessionExport>("export_sessions", { accountId, ids, format, lang });
 export const listCloudSessions = (accountId: string) => invoke<CloudSession[]>("list_cloud_sessions", { accountId });
+export interface CloudSessionPage {
+  sessions: CloudSession[];
+  next_cursor: string | null;
+}
+/** One page, newest first; pass `next_cursor` back for the next. */
+export const listCloudSessionsPage = (accountId: string, cursor: string | null, limit = 10) =>
+  invoke<CloudSessionPage>("list_cloud_sessions_page", { accountId, cursor, limit });
 export const exportCloudSessions = (accountId: string, ids: string[], format: "md" | "json", lang: "zh" | "en") =>
   invoke<CloudExport>("export_cloud_sessions", { accountId, ids, format, lang });
 export const importCloudSessions = (sourceAccountId: string, targetAccountId: string, ids: string[]) =>
   invoke<CloudImport[]>("import_cloud_sessions", { sourceAccountId, targetAccountId, ids });
+export const cloudSessionMessages = (accountId: string, sessionId: string, before?: string | null, limit = 25) =>
+  invoke<CloudMessagePage>("cloud_session_messages", { accountId, sessionId, before: before ?? null, limit });
+export const localSessionMessages = (accountId: string, sessionId: string) =>
+  invoke<CloudMessage[]>("local_session_messages", { accountId, sessionId });
+export const deleteCloudSessions = (accountId: string, ids: string[]) =>
+  invoke<CloudDelete[]>("delete_cloud_sessions", { accountId, ids });
+export const stopCloudAgent = () => invoke<void>("stop_cloud_agent");
 export const manualLoginStart = () => invoke<string>("manual_login_start");
 export const manualLoginSubmit = (pasted: string) => invoke<void>("manual_login_submit", { pasted });
 export const manualLoginStatus = () => invoke<ManualStatus>("manual_login_status");

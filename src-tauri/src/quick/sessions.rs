@@ -167,19 +167,24 @@ fn safe_name(text: &str) -> String {
 }
 
 fn collect_text(value: &Value, out: &mut Vec<String>) {
-    const KEYS: [&str; 12] = [
-        "text", "content", "delta", "message", "prompt", "title", "summary", "output", "result", "answer",
-        "reasoning", "error",
+    const KEYS: [&str; 13] = [
+        "text", "content", "full_content", "delta", "message", "prompt", "title", "summary", "output", "result",
+        "answer", "reasoning", "error",
     ];
     match value {
         Value::Object(map) => {
+            // an assistant event carries its reply in both `content` and `full_content`
+            let has_content = map.get("content").and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty());
             for (key, child) in map {
+                if key == "full_content" && has_content {
+                    continue;
+                }
                 if KEYS.contains(&key.as_str())
                     && let Value::String(s) = child
                 {
-                    let s = s.trim();
-                    if !s.is_empty() {
-                        out.push(s.chars().take(4000).collect());
+                    let s: String = s.trim().chars().take(4000).collect();
+                    if !s.is_empty() && out.last() != Some(&s) {
+                        out.push(s);
                     }
                 }
                 collect_text(child, out);
@@ -437,6 +442,12 @@ mod tests {
     }
 
     #[test]
+    fn an_assistant_reply_is_shown_once() {
+        assert_eq!(event_text(r#"{"content":"Hello there","full_content":"Hello there","message_id":"m1"}"#), "Hello there");
+        assert_eq!(event_text(r#"{"full_content":"Only the full text"}"#), "Only the full text");
+    }
+
+    #[test]
     fn markdown_headings_follow_the_language() {
         let root = setup("lang");
         let zh = export_to(&root.join("zh"), &root.join("base"), "social-a", &["s-new".into()], "md", "zh").unwrap();
@@ -448,4 +459,43 @@ mod tests {
         assert!(text.starts_with("# Untitled session") && text.contains("No (local only)"));
         let _ = fs::remove_dir_all(&root);
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LocalMessage {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    pub timestamp: f64,
+}
+
+/// Turn cached session events into a conversation. This is the local mirror,
+/// not the authoritative transcript; only user and assistant message events
+/// are shown.
+pub fn messages(base: &Path, account_id: &str, session_id: &str) -> Result<Vec<LocalMessage>, SessionError> {
+    let path = match db_path(base, account_id) {
+        Ok(p) => p,
+        Err(SessionError::NoProfile) => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let conn = open(&path)?;
+    let events = read_events(&conn, session_id)?;
+    let mut out = Vec::new();
+    for (kind, timestamp, data) in events {
+        let role = match kind.as_str() {
+            "message_user" | "user_message" => "user",
+            "message_assistant_complete" | "assistant_message" => "assistant",
+            _ => continue,
+        };
+        let content = event_text(&data);
+        if content.trim().is_empty() {
+            continue;
+        }
+        let id = serde_json::from_str::<Value>(&data)
+            .ok()
+            .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_else(|| format!("{session_id}-{timestamp}"));
+        out.push(LocalMessage { id, role: role.into(), content, timestamp });
+    }
+    Ok(out)
 }

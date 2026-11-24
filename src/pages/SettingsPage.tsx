@@ -150,6 +150,13 @@ export default function SettingsPage({ info, desktop, onRefreshDesktop, updates,
   );
 }
 
+/** The updater can't read the latest release's latest.json: either the
+ * release predates signed updates or it is still being built. */
+function updateErrorText(t: Messages, e: unknown): string {
+  const text = errorText(t, e);
+  return /release JSON|latest\.json|\b404\b/i.test(text) ? t.settings.updateNoInfo : t.settings.updateFailed(text);
+}
+
 function AboutPanel({ version, updates, onOpenUpdate }: { version?: string; updates: Updates; onOpenUpdate: () => void }) {
   const { toast } = useUI();
   const t = useT();
@@ -161,7 +168,7 @@ function AboutPanel({ version, updates, onOpenUpdate }: { version?: string; upda
     status === "checking"
       ? t.settings.checking
       : status === "error"
-        ? t.settings.updateFailed(errorText(t, error))
+        ? updateErrorText(t, error)
         : update
           ? t.settings.updateAvailable(update.version)
           : status === "done" && version
@@ -208,6 +215,12 @@ function AboutPanel({ version, updates, onOpenUpdate }: { version?: string; upda
             <button className="btn primary sm" onClick={onOpenUpdate}>
               <Icon name="download" size={13} />
               {t.settings.viewUpdate}
+            </button>
+          )}
+          {status === "error" && (
+            <button className="btn sm" onClick={() => open(`${REPO_URL}/releases/latest`)}>
+              <Icon name="external" size={13} />
+              {t.settings.openRelease}
             </button>
           )}
           <button className="btn sm" onClick={manualCheck} disabled={status === "checking"}>
