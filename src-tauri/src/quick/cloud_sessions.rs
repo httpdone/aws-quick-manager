@@ -119,10 +119,10 @@ async fn list_all(client: &Client, token: &str, tenant: &str) -> Result<Vec<Clou
     for _ in 0..MAX_PAGES {
         let body = invoke(client, token, tenant, &page_path(cursor.as_deref()), json!({ "_method": "GET", "limit": PAGE_SIZE }), json!({})).await?;
         for item in body.get("sessions").and_then(Value::as_array).into_iter().flatten() {
-            if let Some(s) = session_of(item) {
-                if ids.insert(s.id.clone()) {
-                    out.push(s);
-                }
+            if let Some(s) = session_of(item)
+                && ids.insert(s.id.clone())
+            {
+                out.push(s);
             }
         }
         match next_cursor(&body) {
@@ -265,10 +265,10 @@ impl Agent {
         let client = Client::builder().timeout(Duration::from_secs(5)).build().map_err(|e| CloudError::NotReady(e.to_string()))?;
         let url = format!("http://127.0.0.1:{}/health", self.port);
         for _ in 0..120 {
-            if let Ok(r) = client.get(&url).header("Authorization", self.auth_header()).send().await {
-                if r.status().is_success() {
-                    return Ok(());
-                }
+            if let Ok(r) = client.get(&url).header("Authorization", self.auth_header()).send().await
+                && r.status().is_success()
+            {
+                return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
@@ -681,5 +681,37 @@ mod tests {
         assert!(session_of(&json!({ "title": "x" })).is_none());
         let s = session_of(&json!({ "id": "s1", "message_count": 3 })).unwrap();
         assert_eq!((s.id.as_str(), s.title.as_str(), s.message_count), ("s1", "", 3));
+    }
+
+    #[test]
+    fn events_are_pointed_at_the_new_session() {
+        let event = json!({
+            "id": "evt-1",
+            "server_sequence_number": 7,
+            "type": "message_user",
+            "session_id": "src",
+            "thread_id": "src",
+            "message_id": "m-1",
+            "data": { "thread_id": "src", "storage_session_id": "src", "session_id": "src", "content": "hi src" }
+        });
+        let out = rewrite_event(event, "src", "dst").unwrap();
+        assert_eq!(out["session_id"], "dst");
+        assert_eq!(out["thread_id"], "dst");
+        for key in ["thread_id", "storage_session_id", "session_id"] {
+            assert_eq!(out["data"][key], "dst", "{key}");
+        }
+        // ids the server assigns are dropped; everything else is kept as is
+        assert!(out.get("id").is_none() && out.get("server_sequence_number").is_none());
+        assert_eq!(out["message_id"], "m-1");
+        assert_eq!(out["data"]["content"], "hi src");
+    }
+
+    #[test]
+    fn session_created_and_untyped_events_are_skipped() {
+        assert!(rewrite_event(json!({ "type": "session_created", "session_id": "src" }), "src", "dst").is_none());
+        assert!(rewrite_event(json!({ "session_id": "src" }), "src", "dst").is_none());
+        // ids of some other session are not touched
+        let out = rewrite_event(json!({ "type": "x", "session_id": "other" }), "src", "dst").unwrap();
+        assert_eq!(out["session_id"], "other");
     }
 }

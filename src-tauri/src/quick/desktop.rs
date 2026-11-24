@@ -280,10 +280,10 @@ pub fn find() -> Result<Option<Proc>, DesktopError> {
 /// while a lookup runs wait for it instead of starting their own.
 pub fn find_recent() -> Result<Option<Proc>, DesktopError> {
     let mut g = RECENT.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((at, p)) = g.as_ref() {
-        if at.elapsed() < RECENT_TTL {
-            return Ok(p.clone());
-        }
+    if let Some((at, p)) = g.as_ref()
+        && at.elapsed() < RECENT_TTL
+    {
+        return Ok(p.clone());
     }
     let p = probe()?;
     *g = Some((Instant::now(), p.clone()));

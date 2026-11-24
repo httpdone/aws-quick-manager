@@ -70,7 +70,7 @@ async fn main() {
         Some("list") => account_list().map(|list| print_list(&list)),
         Some("current") => profiles::read(&profiles::base_dir())
             .map_err(|e| e.to_string())
-            .and_then(|m| {
+            .map(|m| {
                 let name = m
                     .last_active
                     .as_deref()
@@ -78,7 +78,6 @@ async fn main() {
                     .map(|e| if e.display_name.is_empty() { e.id.clone() } else { e.display_name.clone() })
                     .unwrap_or_else(|| "none".into());
                 println!("{name}");
-                Ok(())
             }),
         Some("switch") => {
             let Some(target) = args.get(1) else { usage() };

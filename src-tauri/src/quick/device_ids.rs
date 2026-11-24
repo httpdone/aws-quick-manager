@@ -105,12 +105,7 @@ fn current_machine(base: &Path) -> (String, String) {
 }
 
 fn write_text(path: &Path, text: &str) -> io::Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("aqm-tmp");
-    fs::write(&tmp, text)?;
-    fs::rename(tmp, path)
+    super::fsutil::atomic_write(path, text.as_bytes())
 }
 
 fn write_base(base: &Path, config: &str, space: &str) -> io::Result<()> {
@@ -347,10 +342,10 @@ pub fn prepare_switch(
     target: &str,
     previous: Option<&str>,
 ) -> Result<(), DeviceIdError> {
-    if let Some(prev) = previous {
-        if prev != target {
-            let _ = ensure_identity(base, vault_dir, prev, true);
-        }
+    if let Some(prev) = previous
+        && prev != target
+    {
+        let _ = ensure_identity(base, vault_dir, prev, true);
     }
     let adopt = previous.is_none() || previous == Some(target);
     ensure_identity(base, vault_dir, target, adopt)?;
@@ -377,6 +372,10 @@ pub fn write_base_identity(base: &Path, vault_dir: &Path, id: &str) -> Result<()
 /// and (when this account is active) the base files are written now.
 pub fn replace_account(base: &Path, vault_dir: &Path, id: &str) -> Result<DeviceIdentity, DeviceIdError> {
     require_closed()?;
+    replace_closed(base, vault_dir, id)
+}
+
+fn replace_closed(base: &Path, vault_dir: &Path, id: &str) -> Result<DeviceIdentity, DeviceIdError> {
     let manifest = profiles::read(base)?;
     let entry = vault::list(vault_dir)?
         .into_iter()
@@ -387,17 +386,15 @@ pub fn replace_account(base: &Path, vault_dir: &Path, id: &str) -> Result<Device
 
     // archive what the profile/base are really using, not a stale vault copy
     let mut old_device = entry.device_id.clone();
-    if let Some(p) = &profile {
-        if let Some(current) = device::read(&device::profile_dir(base, p)) {
-            old_device = current;
-        }
+    if let Some(p) = &profile
+        && let Some(current) = device::read(&device::profile_dir(base, p))
+    {
+        old_device = current;
     }
-    if active {
-        if entry.device_configuration_id.is_empty() {
-            let (base_config, base_space) = current_machine(base);
-            if !base_config.is_empty() {
-                vault::set_identity(vault_dir, id, &old_device, &base_config, &base_space)?;
-            }
+    if active && entry.device_configuration_id.is_empty() {
+        let (base_config, base_space) = current_machine(base);
+        if !base_config.is_empty() {
+            vault::set_identity(vault_dir, id, &old_device, &base_config, &base_space)?;
         }
     }
 
@@ -433,6 +430,10 @@ pub fn replace_account(base: &Path, vault_dir: &Path, id: &str) -> Result<Device
 /// Restore one archived identity; the current bundle is archived in turn.
 pub fn restore_account(base: &Path, vault_dir: &Path, id: &str, target: &IdentityChange) -> Result<(), DeviceIdError> {
     require_closed()?;
+    restore_closed(base, vault_dir, id, target)
+}
+
+fn restore_closed(base: &Path, vault_dir: &Path, id: &str, target: &IdentityChange) -> Result<(), DeviceIdError> {
     let manifest = profiles::read(base)?;
     let entry = vault::list(vault_dir)?
         .into_iter()
@@ -477,4 +478,127 @@ pub fn restore_account(base: &Path, vault_dir: &Path, id: &str, target: &Identit
         &chrono::Utc::now().to_rfc3339(),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::quick::credstore::tests::MemStore;
+    use crate::quick::profiles::{Manifest, ProfileEntry};
+    use std::path::PathBuf;
+
+    struct Env {
+        base: PathBuf,
+        vault: PathBuf,
+        store: MemStore,
+    }
+
+    impl Drop for Env {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(self.base.parent().unwrap());
+        }
+    }
+
+    /// Accounts `ids` in Quick's manifest and in the vault; the first is active.
+    fn env(name: &str, ids: &[&str]) -> Env {
+        let root = std::env::temp_dir().join(format!("aqm-devids-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (base, vault_dir) = (root.join("base"), root.join("vault"));
+        let store = MemStore::default();
+        let manifest = Manifest {
+            version: 1,
+            entries: ids.iter().map(|id| ProfileEntry { id: id.to_string(), provider: "social".into(), ..Default::default() }).collect(),
+            last_active: ids.first().map(|s| s.to_string()),
+            ..Default::default()
+        };
+        profiles::write(&base, &manifest).unwrap();
+        for id in ids {
+            vault::upsert(&vault_dir, &store, id, &format!(r#"{{"refresh_token":"r","email":"{id}@x"}}"#)).unwrap();
+        }
+        Env { base, vault: vault_dir, store }
+    }
+
+    fn vault_entry(e: &Env, id: &str) -> VaultEntry {
+        vault::list(&e.vault).unwrap().into_iter().find(|v| v.id == id).unwrap()
+    }
+
+    #[test]
+    fn a_device_id_shared_by_two_accounts_is_reported() {
+        let e = env("shared", &["social-a", "social-b"]);
+        vault::set_device_id(&e.vault, "social-a", "dev-same").unwrap();
+        vault::set_device_id(&e.vault, "social-b", "dev-same").unwrap();
+        assert_eq!(conflict_for(&e.base, &e.vault, "social-a").unwrap().as_deref(), Some("social-b"));
+        let o = overview(&e.base, &e.vault, &e.store).unwrap();
+        assert!(o.conflicts.contains(&IdConflict { kind: "device", id: "dev-same".into() }));
+
+        vault::set_device_id(&e.vault, "social-b", "dev-other").unwrap();
+        assert_eq!(conflict_for(&e.base, &e.vault, "social-a").unwrap(), None);
+        assert!(overview(&e.base, &e.vault, &e.store).unwrap().conflicts.is_empty());
+    }
+
+    #[test]
+    fn ensure_identity_generates_a_matching_pair_or_adopts_the_base_one() {
+        let e = env("ensure", &["social-a", "social-b"]);
+        let made = ensure_identity(&e.base, &e.vault, "social-b", false).unwrap();
+        assert!(!made.config.is_empty());
+        assert_eq!(made.space, device::space_id_for(&made.config));
+
+        write_base(&e.base, "base-cfg", &device::space_id_for("base-cfg")).unwrap();
+        let adopted = ensure_identity(&e.base, &e.vault, "social-a", true).unwrap();
+        assert_eq!(adopted.config, "base-cfg");
+        // already complete: left as it is
+        assert_eq!(ensure_identity(&e.base, &e.vault, "social-a", false).unwrap().config, "base-cfg");
+    }
+
+    #[test]
+    fn a_drifted_or_shared_config_is_refused() {
+        let e = env("drift", &["social-a", "social-b"]);
+        vault::set_identity(&e.vault, "social-a", "", "cfg-a", "not-derived").unwrap();
+        assert!(matches!(ensure_identity(&e.base, &e.vault, "social-a", false), Err(DeviceIdError::ConfigDrift(_))));
+
+        vault::set_identity(&e.vault, "social-a", "", "cfg-x", &device::space_id_for("cfg-x")).unwrap();
+        vault::set_identity(&e.vault, "social-b", "", "cfg-x", "").unwrap();
+        assert!(matches!(ensure_identity(&e.base, &e.vault, "social-b", false), Err(DeviceIdError::ConfigConflict(_))));
+    }
+
+    #[test]
+    fn replacing_the_active_identity_writes_profile_and_base_and_keeps_history() {
+        let e = env("replace", &["social-a"]);
+        vault::set_device_id(&e.vault, "social-a", "dev-1").unwrap();
+        let first = ensure_identity(&e.base, &e.vault, "social-a", false).unwrap();
+        let next = replace_closed(&e.base, &e.vault, "social-a").unwrap();
+        assert_ne!(next.config, first.config);
+        let profile = e.base.join("profiles").join("social-a");
+        assert_eq!(device::read(&profile).as_deref(), Some(next.device_id.as_str()));
+        assert_eq!(current_machine(&e.base), (next.config.clone(), next.space.clone()));
+        let entry = vault_entry(&e, "social-a");
+        assert_eq!(entry.device_configuration_id, next.config);
+        assert!(entry.identity_history.iter().any(|h| h.config == first.config));
+    }
+
+    #[test]
+    fn restore_only_accepts_an_identity_from_history() {
+        let e = env("restore", &["social-a"]);
+        vault::set_device_id(&e.vault, "social-a", "dev-1").unwrap();
+        let first = ensure_identity(&e.base, &e.vault, "social-a", false).unwrap();
+        replace_closed(&e.base, &e.vault, "social-a").unwrap();
+
+        let stranger = IdentityChange { device_id: "x".into(), config: "y".into(), space: "z".into(), replaced_at: String::new() };
+        assert!(matches!(restore_closed(&e.base, &e.vault, "social-a", &stranger), Err(DeviceIdError::NotInHistory)));
+
+        let old = vault_entry(&e, "social-a").identity_history.into_iter().find(|h| h.config == first.config).unwrap();
+        restore_closed(&e.base, &e.vault, "social-a", &old).unwrap();
+        assert_eq!(vault_entry(&e, "social-a").device_configuration_id, first.config);
+        assert_eq!(current_machine(&e.base).0, first.config);
+    }
+
+    #[test]
+    fn prepare_switch_gives_the_account_left_the_base_pair() {
+        let e = env("prepare", &["social-a", "social-b"]);
+        write_base(&e.base, "base-cfg", &device::space_id_for("base-cfg")).unwrap();
+        prepare_switch(&e.base, &e.vault, "social-b", Some("social-a")).unwrap();
+        assert_eq!(vault_entry(&e, "social-a").device_configuration_id, "base-cfg");
+        let b = vault_entry(&e, "social-b");
+        assert!(!b.device_configuration_id.is_empty() && b.device_configuration_id != "base-cfg");
+    }
 }

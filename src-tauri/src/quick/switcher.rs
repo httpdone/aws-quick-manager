@@ -139,10 +139,10 @@ pub fn backup(base: &Path, backups: &Path) -> io::Result<PathBuf> {
 /// (repeated manual backups, or a switch that did not change anything).
 pub fn backup_if_changed(base: &Path, backups: &Path) -> io::Result<PathBuf> {
     let source = fs::read(base.join(profiles::MANIFEST_FILE))?;
-    if let Some(latest) = latest_backup(backups)? {
-        if fs::read(&latest).map(|previous| previous == source).unwrap_or(false) {
-            return Ok(latest);
-        }
+    if let Some(latest) = latest_backup(backups)?
+        && fs::read(&latest).map(|previous| previous == source).unwrap_or(false)
+    {
+        return Ok(latest);
     }
     backup(base, backups)
 }

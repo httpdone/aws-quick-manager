@@ -76,10 +76,14 @@ pub fn region_of(tenant_url: &str) -> String {
     let re = ["us", "eu", "ap", "sa", "ca", "me", "af", "il"];
     for part in tenant_url.split(['.', '/']) {
         let mut it = part.splitn(3, '-');
-        if let (Some(a), Some(b), Some(c)) = (it.next(), it.next(), it.next()) {
-            if re.contains(&a) && !b.is_empty() && b.chars().all(|ch| ch.is_ascii_lowercase()) && c.chars().all(|ch| ch.is_ascii_digit()) && !c.is_empty() {
-                return part.to_string();
-            }
+        if let (Some(a), Some(b), Some(c)) = (it.next(), it.next(), it.next())
+            && re.contains(&a)
+            && !b.is_empty()
+            && b.chars().all(|ch| ch.is_ascii_lowercase())
+            && !c.is_empty()
+            && c.chars().all(|ch| ch.is_ascii_digit())
+        {
+            return part.to_string();
         }
     }
     "us-east-1".into()

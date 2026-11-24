@@ -125,7 +125,24 @@ fn reason(status: u16) -> &'static str {
     }
 }
 
+/// Text for an HTML page; error messages can carry query parameters.
+fn escape_html(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 fn html(status: u16, message: &str) -> Reply {
+    let message = escape_html(message);
     Reply {
         status,
         location: None,
@@ -244,6 +261,8 @@ pub struct NewAccount {
     blob: String,
 }
 
+// the pieces of one sign-in, passed straight through from its two call sites
+#[allow(clippy::too_many_arguments)]
 async fn complete_login(
     http: &reqwest::Client,
     query: &[(String, String)],
@@ -261,7 +280,7 @@ async fn complete_login(
         let msg = format!("{err} {}", field(query, &["error_description"]).unwrap_or_default()).trim().to_string();
         return Err(LoginError::Denied(msg));
     }
-    let code = field(query, &["code"]).ok_or_else(|| LoginError::MissingInCallback("code"))?;
+    let code = field(query, &["code"]).ok_or(LoginError::MissingInCallback("code"))?;
     let region = discovery
         .get("idcRegion")
         .or_else(|| discovery.get("idc_region"))
@@ -525,11 +544,11 @@ async fn advance_manual(
             let client = session
                 .client
                 .take()
-                .ok_or_else(|| LoginError::OutOfOrder)?;
+                .ok_or(LoginError::OutOfOrder)?;
             let discovery = session
                 .discovery
                 .clone()
-                .ok_or_else(|| LoginError::OutOfOrder)?;
+                .ok_or(LoginError::OutOfOrder)?;
             (
                 session.state.clone(),
                 session.verifier.clone(),
@@ -674,4 +693,69 @@ pub fn commit(base: &Path, store: &dyn RawStore, vault_dir: &Path, account: NewA
     vault::set_identity(vault_dir, &account.id, &device_id, &config, &space)?;
 
     Ok(LoginOutcome { id: account.id, email: account.email, display_name: account.display_name })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::quick::credstore::tests::MemStore;
+
+    fn q(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn pasted_addresses_in_every_shape_give_their_query() {
+        let full = parse_pasted_query("  http://127.0.0.1:5555/?code=abc&state=s%201#frag ").unwrap();
+        assert_eq!(full, q(&[("code", "abc"), ("state", "s 1")]));
+        assert_eq!(parse_pasted_query("127.0.0.1:5555/callback?code=x").unwrap(), q(&[("code", "x")]));
+        assert_eq!(parse_pasted_query("code=x&state=y").unwrap(), q(&[("code", "x"), ("state", "y")]));
+        assert!(parse_pasted_query("").is_none());
+        assert!(parse_pasted_query("just some words").is_none());
+    }
+
+    #[test]
+    fn field_takes_the_first_of_several_names() {
+        let query = q(&[("issuer_url", "a"), ("tenantUrl", "b")]);
+        assert_eq!(field(&query, &["issuerUrl", "issuer_url"]).as_deref(), Some("a"));
+        assert_eq!(field(&query, &["tenantUrl", "tenant_url"]).as_deref(), Some("b"));
+        assert_eq!(field(&query, &["code"]), None);
+        assert!(has(&query, "tenantUrl") && !has(&query, "code"));
+    }
+
+    #[test]
+    fn pkce_challenge_is_the_base64url_sha256_of_the_verifier() {
+        // RFC 7636 appendix B
+        assert_eq!(challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+        assert_ne!(token(), token());
+    }
+
+    #[test]
+    fn callback_pages_escape_the_message() {
+        let page = html(400, "<script>alert(1)</script> & \"x\"");
+        assert!(!page.body.contains("<script>"));
+        assert!(page.body.contains("&lt;script&gt;") && page.body.contains("&amp;") && page.body.contains("&quot;x&quot;"));
+    }
+
+    fn account(id: &str) -> NewAccount {
+        NewAccount { id: id.into(), email: format!("{id}@x"), display_name: String::new(), blob: format!(r#"{{"refresh_token":"new-{id}"}}"#) }
+    }
+
+    #[test]
+    fn relogin_must_land_on_the_same_account_and_clears_its_flag() {
+        let dir = std::env::temp_dir().join(format!("aqm-relogin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = MemStore::default();
+        vault::upsert(&dir, &store, "social-a", r#"{"refresh_token":"old"}"#).unwrap();
+        vault::set_flag(&dir, "social-a", Some("auth_invalid")).unwrap();
+
+        assert!(matches!(relogin_commit(&store, &dir, "social-a", account("social-b")), Err(LoginError::WrongAccount(_))));
+        assert_eq!(vault::get_blob(&store, "social-a").unwrap().as_deref(), Some(r#"{"refresh_token":"old"}"#));
+
+        let (outcome, blob) = relogin_commit(&store, &dir, "social-a", account("social-a")).unwrap();
+        assert_eq!(outcome.id, "social-a");
+        assert_eq!(vault::get_blob(&store, "social-a").unwrap(), Some(blob));
+        assert_eq!(vault::list(&dir).unwrap()[0].flag, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

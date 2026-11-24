@@ -120,10 +120,10 @@ pub fn delete_value(store: &dyn RawStore, target: &str) -> Result<(), CredError>
 /// `session@` twin. Only text that parses as JSON is returned.
 pub fn read_session_text(store: &dyn RawStore, target: &str) -> Result<Option<String>, CredError> {
     for t in [target.to_string(), format!("{USER}@{target}")] {
-        if let Some(text) = read_value(store, &t)? {
-            if serde_json::from_str::<Value>(&text).is_ok() {
-                return Ok(Some(text));
-            }
+        if let Some(text) = read_value(store, &t)?
+            && serde_json::from_str::<Value>(&text).is_ok()
+        {
+            return Ok(Some(text));
         }
     }
     Ok(None)
@@ -209,7 +209,7 @@ mod windows_store {
                 Ok(()) => unsafe {
                     let c = &*cred;
                     let bytes = std::slice::from_raw_parts(c.CredentialBlob, c.CredentialBlobSize as usize);
-                    let units: Vec<u16> = bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
+                    let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes(*b)).collect();
                     CredFree(cred as *const _);
                     Ok(Some(String::from_utf16_lossy(&units)))
                 },

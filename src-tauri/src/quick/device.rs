@@ -82,7 +82,7 @@ pub fn ensure_unique(dir: &Path, known: Option<&str>, used: &HashSet<String>) ->
         if used.contains(&current) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("{current}"),
+                current,
             ));
         }
         return Ok(current);
@@ -91,7 +91,7 @@ pub fn ensure_unique(dir: &Path, known: Option<&str>, used: &HashSet<String>) ->
         if used.contains(k) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("{k}"),
+                k.to_string(),
             ));
         }
         write(dir, k)?;
@@ -106,8 +106,67 @@ pub fn ensure_unique(dir: &Path, known: Option<&str>, used: &HashSet<String>) ->
 }
 
 fn write(dir: &Path, id: &str) -> io::Result<()> {
-    fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!("{DEVICE_FILE}.tmp"));
-    fs::write(&tmp, id)?;
-    fs::rename(tmp, dir.join(DEVICE_FILE))
+    super::fsutil::atomic_write(&dir.join(DEVICE_FILE), id.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("aqm-device-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn new_ids_are_v4_uuids() {
+        let id = new_id();
+        assert_eq!(id.len(), 36);
+        assert_eq!(&id[14..15], "4");
+        assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"));
+        assert_ne!(new_id(), id);
+    }
+
+    #[test]
+    fn space_id_is_a_stable_uuid5_in_32_hex() {
+        let a = space_id_for("cfg-1");
+        assert_eq!(a.len(), 32);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(&a[12..13], "5");
+        assert_eq!(a, space_id_for("cfg-1"));
+        assert_ne!(a, space_id_for("cfg-2"));
+    }
+
+    #[test]
+    fn profile_dir_follows_data_path() {
+        let base = Path::new("/base");
+        let e = |p: &str| ProfileEntry { id: "social-a".into(), data_path: p.into(), ..Default::default() };
+        assert_eq!(profile_dir(base, &e("")), base.join("profiles").join("social-a"));
+        assert_eq!(profile_dir(base, &e("profiles/x")), base.join("profiles/x"));
+    }
+
+    #[test]
+    fn ensure_unique_keeps_the_file_reuses_a_free_id_and_refuses_a_taken_one() {
+        let dir = temp("unique");
+        let mut used = HashSet::new();
+        used.insert("taken".to_string());
+
+        // no file: a free known id is written
+        assert_eq!(ensure_unique(&dir, Some("mine"), &used).unwrap(), "mine");
+        assert_eq!(read(&dir).as_deref(), Some("mine"));
+        // the file wins over a different known id
+        assert_eq!(ensure_unique(&dir, Some("other"), &used).unwrap(), "mine");
+        // a file holding an id another account uses is refused, not rotated
+        write_id(&dir, "taken").unwrap();
+        assert_eq!(ensure_unique(&dir, None, &used).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        // a known id that is taken is refused
+        let fresh = temp("unique2");
+        assert!(ensure_unique(&fresh, Some("taken"), &used).is_err());
+        // nothing known: a new id
+        let id = ensure_unique(&fresh, None, &used).unwrap();
+        assert_eq!(id.len(), 36);
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&fresh);
+    }
 }

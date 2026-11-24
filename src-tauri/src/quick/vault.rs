@@ -243,19 +243,18 @@ pub fn import_one(base: &Path, store: &dyn RawStore, vault_dir: &Path, id: &str)
     upsert_entry(&mut index, id, &blob, &chrono::Utc::now().to_rfc3339(), true);
     if manifest.last_active.as_deref() == Some(id) {
         let (config, space) = base_identity(base);
-        if !config.is_empty() {
-            if let Some(e) = index.accounts.iter_mut().find(|e| e.id == id) {
-                if e.device_configuration_id.is_empty() {
-                    e.device_configuration_id = config;
-                    e.device_space_id = space;
-                }
-            }
+        if !config.is_empty()
+            && let Some(e) = index.accounts.iter_mut().find(|e| e.id == id)
+            && e.device_configuration_id.is_empty()
+        {
+            e.device_configuration_id = config;
+            e.device_space_id = space;
         }
     }
-    if let Some(d) = device::read(&device::profile_dir(base, profile)) {
-        if let Some(i) = index.accounts.iter().position(|e| e.id == id) {
-            index.accounts[i].device_id = d;
-        }
+    if let Some(d) = device::read(&device::profile_dir(base, profile))
+        && let Some(i) = index.accounts.iter().position(|e| e.id == id)
+    {
+        index.accounts[i].device_id = d;
     }
     write_index(vault_dir, &index)?;
     Ok(true)
@@ -277,13 +276,13 @@ pub fn set_flag(dir: &Path, id: &str, flag: Option<&str>) -> io::Result<()> {
 pub fn set_identity(dir: &Path, id: &str, device_id: &str, config: &str, space: &str) -> io::Result<()> {
     let _lock = lock(dir)?;
     let mut index = read_index(dir)?;
-    if let Some(e) = index.accounts.iter_mut().find(|e| e.id == id) {
-        if e.device_id != device_id || e.device_configuration_id != config || e.device_space_id != space {
-            e.device_id = device_id.to_string();
-            e.device_configuration_id = config.to_string();
-            e.device_space_id = space.to_string();
-            write_index(dir, &index)?;
-        }
+    if let Some(e) = index.accounts.iter_mut().find(|e| e.id == id)
+        && (e.device_id != device_id || e.device_configuration_id != config || e.device_space_id != space)
+    {
+        e.device_id = device_id.to_string();
+        e.device_configuration_id = config.to_string();
+        e.device_space_id = space.to_string();
+        write_index(dir, &index)?;
     }
     Ok(())
 }
@@ -333,11 +332,11 @@ pub fn record_identity_change(
 pub fn set_device_id(dir: &Path, id: &str, device_id: &str) -> io::Result<()> {
     let _lock = lock(dir)?;
     let mut index = read_index(dir)?;
-    if let Some(e) = index.accounts.iter_mut().find(|e| e.id == id) {
-        if e.device_id != device_id {
-            e.device_id = device_id.to_string();
-            write_index(dir, &index)?;
-        }
+    if let Some(e) = index.accounts.iter_mut().find(|e| e.id == id)
+        && e.device_id != device_id
+    {
+        e.device_id = device_id.to_string();
+        write_index(dir, &index)?;
     }
     Ok(())
 }
@@ -406,14 +405,14 @@ pub fn import_from_desktop(base: &Path, store: &dyn RawStore, vault_dir: &Path) 
             None => None,
         };
 
-        if let Some(vault_blob) = &vault_blob {
-            if *vault_blob == blob {
-                if let Some(i) = existing {
-                    index.accounts[i].last_synced_at = now.clone();
-                }
-                report.unchanged.push(id.into());
-                continue;
+        if let Some(vault_blob) = &vault_blob
+            && *vault_blob == blob
+        {
+            if let Some(i) = existing {
+                index.accounts[i].last_synced_at = now.clone();
             }
+            report.unchanged.push(id.into());
+            continue;
         }
 
         let desktop_wins = manifest.last_active.as_deref() == Some(id)
@@ -444,25 +443,23 @@ pub fn import_from_desktop(base: &Path, store: &dyn RawStore, vault_dir: &Path) 
     // the profile's `device_id` is the id the backend reports as its outpost
     // id; keep the vault copy in step with the file the desktop uses
     for e in &manifest.entries {
-        if let Some(d) = device::read(&device::profile_dir(base, e)) {
-            if let Some(i) = index.accounts.iter().position(|x| x.id == e.id) {
-                index.accounts[i].device_id = d;
-            }
+        if let Some(d) = device::read(&device::profile_dir(base, e))
+            && let Some(i) = index.accounts.iter().position(|x| x.id == e.id)
+        {
+            index.accounts[i].device_id = d;
         }
     }
 
     // the account the desktop is currently on owns the base pair; adopt it so
     // a later switch doesn't lose the space that account has been using
     let (config, space) = base_identity(base);
-    if !config.is_empty() {
-        if let Some(active) = manifest.last_active.as_deref() {
-            if let Some(i) = index.accounts.iter().position(|e| e.id == active) {
-                if index.accounts[i].device_configuration_id.is_empty() {
-                    index.accounts[i].device_configuration_id = config;
-                    index.accounts[i].device_space_id = space;
-                }
-            }
-        }
+    if !config.is_empty()
+        && let Some(active) = manifest.last_active.as_deref()
+        && let Some(i) = index.accounts.iter().position(|e| e.id == active)
+        && index.accounts[i].device_configuration_id.is_empty()
+    {
+        index.accounts[i].device_configuration_id = config;
+        index.accounts[i].device_space_id = space;
     }
 
     write_index(vault_dir, &index)?;
@@ -722,8 +719,9 @@ mod tests {
             h.join().unwrap();
         }
         let back = read_index(&dir).unwrap();
-        for i in 0..16 {
-            assert_eq!(back.accounts[i].device_id, format!("dev-{i}"));
+        assert_eq!(back.accounts.len(), 16);
+        for (i, e) in back.accounts.iter().enumerate() {
+            assert_eq!(e.device_id, format!("dev-{i}"));
         }
         let leftovers: Vec<String> = fs::read_dir(&dir)
             .unwrap()

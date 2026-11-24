@@ -95,10 +95,9 @@ pub fn list(base: &Path, account_id: &str) -> Result<Vec<SessionInfo>, SessionEr
         .map_err(|e| SessionError::Db(e.to_string()))?;
     let mut out = Vec::new();
     for row in rows {
-        let mut info = row.map_err(|e| SessionError::Db(e.to_string()))?;
-        if info.title.trim().is_empty() {
-            info.title = "未命名会话".into();
-        }
+        let mut info: SessionInfo = row.map_err(|e| SessionError::Db(e.to_string()))?;
+        // an untitled session stays untitled; the UI shows its own label
+        info.title = info.title.trim().to_string();
         out.push(info);
     }
     Ok(out)
@@ -125,12 +124,12 @@ fn collect_text(value: &Value, out: &mut Vec<String>) {
     match value {
         Value::Object(map) => {
             for (key, child) in map {
-                if KEYS.contains(&key.as_str()) {
-                    if let Value::String(s) = child {
-                        let s = s.trim();
-                        if !s.is_empty() {
-                            out.push(s.chars().take(4000).collect());
-                        }
+                if KEYS.contains(&key.as_str())
+                    && let Value::String(s) = child
+                {
+                    let s = s.trim();
+                    if !s.is_empty() {
+                        out.push(s.chars().take(4000).collect());
                     }
                 }
                 collect_text(child, out);
@@ -177,6 +176,11 @@ pub fn export(
     ids: &[String],
     format: &str,
 ) -> Result<SessionExport, SessionError> {
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
+    export_to(&switcher::app_dir().join("exports").join(&stamp), base, account_id, ids, format)
+}
+
+fn export_to(dir: &Path, base: &Path, account_id: &str, ids: &[String], format: &str) -> Result<SessionExport, SessionError> {
     let all = list(base, account_id)?;
     let selected: Vec<SessionInfo> = if ids.is_empty() {
         all
@@ -191,19 +195,18 @@ pub fn export(
     let conn = open(&path)?;
     let markdown = format != "json";
 
-    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
-    let dir = switcher::app_dir().join("exports").join(&stamp);
-    fs::create_dir_all(&dir)?;
+    fs::create_dir_all(dir)?;
 
     let mut events_total = 0usize;
     let mut documents = Vec::new();
+    let mut json_docs: Vec<Value> = Vec::new();
     for session in &selected {
         let events = read_events(&conn, &session.id)?;
         events_total += events.len();
         if markdown {
             let mut text = format!(
                 "# {}\n\n- 会话 ID: {}\n- 账号: {}\n- 更新时间: {}\n- 消息数: {}\n- 云端同步: {}\n\n",
-                session.title,
+                if session.title.is_empty() { &session.id } else { &session.title },
                 session.id,
                 account_id,
                 if session.updated_at > 0.0 {
@@ -237,22 +240,36 @@ pub fn export(
                     })
                 })
                 .collect();
-            documents.push((
-                safe_name(&session.title),
-                session.id.clone(),
-                serde_json::to_string_pretty(&json!({
-                    "account": account_id,
-                    "session": session,
-                    "events": events_json,
-                }))
-                .unwrap_or_default(),
-            ));
+            json_docs.push(json!({
+                "account": account_id,
+                "session": session,
+                "events": events_json,
+            }));
         }
+    }
+
+    // JSON: one object for one session, an array for several (a file of
+    // concatenated objects isn't valid JSON)
+    if !markdown {
+        let text = if json_docs.len() == 1 {
+            serde_json::to_string_pretty(&json_docs[0])
+        } else {
+            serde_json::to_string_pretty(&Value::Array(json_docs.clone()))
+        }
+        .map_err(|e| SessionError::Db(e.to_string()))?;
+        let file = if selected.len() == 1 {
+            let s = &selected[0];
+            dir.join(format!("{}-{}.json", safe_name(&s.title), s.id.chars().take(8).collect::<String>()))
+        } else {
+            dir.join("sessions.json")
+        };
+        fs::write(&file, text)?;
+        return Ok(SessionExport { path: file.display().to_string(), sessions: json_docs.len(), events: events_total });
     }
 
     if documents.len() == 1 {
         let (name, id, content) = &documents[0];
-        let file = dir.join(format!("{name}-{}.{}", &id[..id.len().min(8)], if markdown { "md" } else { "json" }));
+        let file = dir.join(format!("{name}-{}.md", id.chars().take(8).collect::<String>()));
         fs::write(&file, content)?;
         return Ok(SessionExport {
             path: file.display().to_string(),
@@ -264,17 +281,105 @@ pub fn export(
     let mut combined = String::new();
     for (_, _, content) in &documents {
         combined.push_str(content);
-        if markdown {
-            combined.push_str("\n\n---\n\n");
-        } else {
-            combined.push('\n');
-        }
+        combined.push_str("\n\n---\n\n");
     }
-    let file = dir.join(if markdown { "sessions.md" } else { "sessions.json" });
+    let file = dir.join("sessions.md");
     fs::write(&file, combined)?;
     Ok(SessionExport {
         path: file.display().to_string(),
         sessions: documents.len(),
         events: events_total,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::quick::profiles::{Manifest, ProfileEntry};
+
+    fn setup(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("aqm-sessions-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let base = root.join("base");
+        let m = Manifest { version: 1, entries: vec![ProfileEntry { id: "social-a".into(), ..Default::default() }], ..Default::default() };
+        profiles::write(&base, &m).unwrap();
+        let db = base.join("profiles").join("social-a").join("sessions");
+        fs::create_dir_all(&db).unwrap();
+        let conn = Connection::open(db.join("sessions.db")).unwrap();
+        conn.execute_batch(
+            "create table sessions (id text, title text, created_at real, updated_at real, message_count integer, \
+               server_session_id text, archived integer, deleted_at real);
+             create table session_events (session_id text, type text, timestamp real, data text);
+             insert into sessions values ('s-old', 'Old', 1, 10, 2, 'srv-1', 0, null);
+             insert into sessions values ('s-new', '', 1, 20, 1, null, 1, null);
+             insert into sessions values ('s-gone', 'Gone', 1, 30, 0, null, 0, 5);
+             insert into session_events values ('s-old', 'message_user', 10, '{\"content\":\"hello\"}');
+             insert into session_events values ('s-old', 'message_assistant_complete', 11, '{\"data\":{\"text\":\"hi there\"}}');",
+        )
+        .unwrap();
+        root
+    }
+
+    #[test]
+    fn list_skips_deleted_sessions_newest_first() {
+        let root = setup("list");
+        let list = list(&root.join("base"), "social-a").unwrap();
+        assert_eq!(list.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["s-new", "s-old"]);
+        assert_eq!(list[0].title, "");
+        assert!(list[0].archived && list[0].server_session_id.is_empty());
+        assert_eq!(list[1].server_session_id, "srv-1");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_account_without_a_session_store_has_no_sessions() {
+        let root = setup("none");
+        fs::remove_dir_all(root.join("base").join("profiles")).unwrap();
+        assert!(list(&root.join("base"), "social-a").unwrap().is_empty());
+        assert!(matches!(list(&root.join("base"), "social-x"), Err(SessionError::NoAccount(_))));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn markdown_export_includes_event_text() {
+        let root = setup("md");
+        let out = export_to(&root.join("out"), &root.join("base"), "social-a", &["s-old".into()], "md").unwrap();
+        assert_eq!((out.sessions, out.events), (1, 2));
+        let text = fs::read_to_string(&out.path).unwrap();
+        assert!(text.starts_with("# Old"));
+        assert!(text.contains("hello") && text.contains("hi there"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn json_export_of_several_sessions_is_one_valid_array() {
+        let root = setup("json");
+        let out = export_to(&root.join("out"), &root.join("base"), "social-a", &[], "json").unwrap();
+        let v: Value = serde_json::from_str(&fs::read_to_string(&out.path).unwrap()).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 2);
+        assert_eq!(out.sessions, 2);
+
+        let one = export_to(&root.join("out1"), &root.join("base"), "social-a", &["s-old".into()], "json").unwrap();
+        let v: Value = serde_json::from_str(&fs::read_to_string(&one.path).unwrap()).unwrap();
+        assert_eq!(v["session"]["id"], "s-old");
+        assert_eq!(v["events"][0]["data"]["content"], "hello");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn nothing_selected_is_an_error() {
+        let root = setup("empty");
+        assert!(matches!(
+            export_to(&root.join("out"), &root.join("base"), "social-a", &["nope".into()], "md"),
+            Err(SessionError::NothingToExport)
+        ));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn file_names_are_safe() {
+        assert_eq!(safe_name("a/b:c?"), "a-b-c-");
+        assert_eq!(safe_name("  ..  "), "session");
+        assert_eq!(safe_name(&"x".repeat(100)).len(), 60);
+    }
 }

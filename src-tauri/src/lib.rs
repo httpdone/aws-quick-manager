@@ -230,7 +230,7 @@ fn list_backups() -> Result<Vec<BackupInfo>, AppError> {
             });
         }
     }
-    out.sort_by(|a, b| b.modified.cmp(&a.modified));
+    out.sort_by_key(|b| std::cmp::Reverse(b.modified));
     Ok(out)
 }
 
@@ -398,10 +398,10 @@ async fn account_usage(id: String) -> Result<api::Usage, AppError> {
             // With Quick closed, keep its copy in step too, or the next sync
             // would put back the older token. Skipped while a switch or
             // another write to Quick's files is under way.
-            if let Ok(_guard) = switcher::lock_desktop_writes() {
-                if matches!(desktop::find_recent(), Ok(None)) {
-                    let _ = switcher::write_desktop_blob(&profiles::base_dir(), store.as_ref(), &id, &blob);
-                }
+            if let Ok(_guard) = switcher::lock_desktop_writes()
+                && matches!(desktop::find_recent(), Ok(None))
+            {
+                let _ = switcher::write_desktop_blob(&profiles::base_dir(), store.as_ref(), &id, &blob);
             }
             Ok(())
         })
