@@ -1,7 +1,7 @@
 import { RefObject, useEffect, useMemo, useState } from "react";
 import { useT } from "../i18n";
 import { Account, DesktopStatus, Usage } from "../lib/api";
-import { fmtDate, fmtHours, fmtRelative, fmtTime, hue, isoSecs, nextResetLabel } from "../lib/format";
+import { fmtDate, fmtHours, fmtQuota, fmtRelative, fmtTime, hue, isoSecs, nextResetLabel } from "../lib/format";
 import { getStored } from "../lib/prefs";
 import { Tone, accountStatus, canQuota, canSwitch, leftHours, who, needsSignIn } from "../lib/status";
 import Icon from "../components/Icon";
@@ -500,7 +500,9 @@ function QuotaBlock({ a, usage, error, loading, onReload }: QuotaProps) {
         <span className="quotaPlan">{usage.plan || t.accounts.quota}</span>
         <span className="quotaHint">
           {usage.trial_ends_at ? t.accounts.trialUntil(new Date(usage.trial_ends_at).toLocaleDateString()) : ""}
-          {usage.windows.length > 0 && nextResetLabel(t)}
+          {usage.session_resume_minutes > 0
+            ? t.accounts.sessionResumes(usage.session_resume_minutes)
+            : usage.windows.length > 0 && nextResetLabel(t)}
         </span>
         <button className="iconBtn xs" onClick={onReload} disabled={loading} title={t.accounts.refreshQuota}>
           <Icon name="refresh" size={13} className={loading ? "spin" : ""} />
@@ -514,13 +516,13 @@ function QuotaBlock({ a, usage, error, loading, onReload }: QuotaProps) {
           const tone: Tone = ratio > 0.5 ? "ok" : ratio > 0.2 ? "warn" : "bad";
           return (
             <div className="quotaRow" key={w.name}>
-              <span className="quotaName">{w.name}</span>
-              <span className={`meter ${tone}`} title={t.accounts.used(fmtHours(w.used_hours))}>
+              <span className="quotaName">{w.name === "Session" ? t.accounts.sessionWindow : w.name}</span>
+              <span className={`meter ${tone}`} title={t.accounts.used(fmtQuota(w.used_hours, w.unit))}>
                 <span style={{ width: `${Math.round(ratio * 100)}%` }} />
               </span>
               <span className="quotaNum">
-                {t.accounts.leftPrefix} <b>{fmtHours(w.left_hours)}</b>
-                <i> / {fmtHours(w.limit_hours)}</i>
+                {t.accounts.leftPrefix} <b>{fmtQuota(w.left_hours, w.unit)}</b>
+                <i> / {fmtQuota(w.limit_hours, w.unit)}</i>
               </span>
             </div>
           );

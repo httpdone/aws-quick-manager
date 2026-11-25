@@ -121,6 +121,8 @@ const zh = {
     noQuotaData: "没有额度数据",
     used: (hours: string) => `已用 ${hours}`,
     leftPrefix: "剩",
+    sessionWindow: "会话窗口",
+    sessionResumes: (min: number) => `Session 额度 ${min} 分钟后恢复 · `,
   },
   details: {
     title: "账号详情",

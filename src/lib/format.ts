@@ -6,6 +6,9 @@ export const fmtDate = (secs: number) => (secs ? new Date(secs * 1000).toLocaleS
 export const fmtTime = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "—");
 
 export const fmtHours = (h: number) => `${Math.round(h * 10) / 10} h`;
+export const fmtMins = (m: number) => `${Math.round(m)} min`;
+/** Quota amounts arrive in the window's own unit despite the *_hours field names. */
+export const fmtQuota = (v: number, unit: string) => (unit === "min" ? fmtMins(v) : fmtHours(v));
 
 /** Unix seconds of an ISO timestamp, 0 when missing. */
 export const isoSecs = (iso: string | null) => (iso ? Math.floor(new Date(iso).getTime() / 1000) : 0);

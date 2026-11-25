@@ -122,6 +122,8 @@ const en: Messages = {
     noQuotaData: "No quota data",
     used: (hours) => `${hours} used`,
     leftPrefix: "Left",
+    sessionWindow: "Session window",
+    sessionResumes: (min) => `Session quota resumes in ${min} min · `,
   },
   details: {
     title: "Account details",

@@ -48,12 +48,18 @@ export interface UsageWindow {
   used_hours: number;
   limit_hours: number;
   left_hours: number;
+  /** "h" or "min" — amounts are in this unit despite the field names */
+  unit: string;
 }
 
 export interface Usage {
   plan: string;
   trial_ends_at: number;
   windows: UsageWindow[];
+  /** minutes until the rolling session window resumes, when it is exhausted */
+  session_resume_minutes: number;
+  /** unix seconds when the monthly bucket resets, 0 when unknown */
+  monthly_resets_at: number;
 }
 
 export interface AccountDetails {

@@ -29,4 +29,10 @@ export function accountStatus(a: Account, t: Messages): { label: string; tone: T
 export const needsSignIn = (a: Account, t: Messages) => accountStatus(a, t).tone === "bad";
 
 /** Hours left in the account's main pool, -1 when unknown. */
-export const leftHours = (u?: Usage) => (u && u.windows.length ? u.windows[0].left_hours : -1);
+// The monthly agent-hour quota drives sorting/totals; the rolling session
+// window (minutes) sits at windows[0] for visibility but must not mix units.
+export const leftHours = (u?: Usage) => {
+  if (!u || !u.windows.length) return -1;
+  const monthly = u.windows.find((w) => w.unit !== "min");
+  return (monthly ?? u.windows[0]).left_hours;
+};

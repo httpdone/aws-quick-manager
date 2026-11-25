@@ -255,6 +255,8 @@ pub struct UsageWindow {
     pub used_hours: f64,
     pub limit_hours: f64,
     pub left_hours: f64,
+    /// "h" or "min" — amounts are stored in this unit despite the field names
+    pub unit: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
@@ -263,6 +265,12 @@ pub struct Usage {
     /// unix ms of a free trial's end, 0 when none
     pub trial_ends_at: i64,
     pub windows: Vec<UsageWindow>,
+    /// minutes until the rolling session window resumes, when it is exhausted
+    #[serde(default)]
+    pub session_resume_minutes: i64,
+    /// unix seconds when the monthly bucket resets, 0 when unknown
+    #[serde(default)]
+    pub monthly_resets_at: i64,
 }
 
 /// QUICK_LITE_FREE_TRIAL → "Quick Lite (free trial)".
@@ -311,6 +319,7 @@ pub fn usage_from(resp: &Value) -> Usage {
             used_hours: hours(used),
             limit_hours: hours(total),
             left_hours: hours(left.max(0.0)),
+            unit: "h".into(),
         });
     }
     let sub = resp.get("subscriptionMetadata").cloned().unwrap_or(Value::Null);
@@ -320,6 +329,70 @@ pub fn usage_from(resp: &Value) -> Usage {
         plan: plan_name(sub.get("subscriptionType").and_then(Value::as_str).unwrap_or("")),
         trial_ends_at: if active { n(&trial, &["expiryDate"]) } else { 0 },
         windows,
+        session_resume_minutes: 0,
+        monthly_resets_at: 0,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// profile/usage — the runtime's own usage endpoint. Richer than entitlements:
+// a SESSION bucket (minutes per rolling window, with resume_in_minutes when
+// exhausted) next to the monthly bucket. Travels the invokeAgent qbs-event
+// envelope; the answer nests api_response inside invokeAgentResponse, doubly
+// JSON-encoded. Verified live on a social/AIDP account.
+// ---------------------------------------------------------------------------
+
+fn numf(v: &Value) -> Option<f64> {
+    v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+}
+
+fn bucket_minutes(b: &Value) -> Option<(f64, f64, i64)> {
+    let used = numf(b.get("used")?)?;
+    let limit = numf(b.get("limit")?).unwrap_or(0.0);
+    let resume = b.get("resume_in_minutes").and_then(|v| numf(v)).unwrap_or(0.0) as i64;
+    Some((used, limit, resume))
+}
+
+fn unwrap_invoke_agent(r: &Value) -> Option<Value> {
+    let ia = r.get("eventResponse")?.get("invokeAgentResponse")?;
+    let ia: Value = match ia {
+        Value::String(s) => serde_json::from_str(s).ok()?,
+        other => other.clone(),
+    };
+    match ia.get("body")? {
+        Value::String(s) => serde_json::from_str(s).ok(),
+        other => Some(other.clone()),
+    }
+}
+
+/// Query profile/usage and fold the session bucket into the usage windows.
+/// Best-effort: a failure here must not lose the entitlement data.
+pub async fn merge_session_bucket(http: &reqwest::Client, tenant_url: &str, access_token: &str, usage: &mut Usage) {
+    let url = format!("{}/integration/quick-work/qbs-event", tenant_url.trim_end_matches('/'));
+    let body = json!({
+        "eventType": "invokeAgent",
+        "eventBody": { "invokeAgent": { "path": "profile/usage", "queryParams": { "_method": "GET" }, "body": {} } },
+    });
+    let Ok(r) = post_json(http, &url, &body, Some(access_token)).await else { return };
+    let Some(inner) = unwrap_invoke_agent(&r) else { return };
+    if let Some(session) = inner.get("session").filter(|v| v.is_object()) {
+        if let Some((used, limit, resume)) = bucket_minutes(session) {
+            if limit > 0.0 {
+                usage.windows.insert(0, UsageWindow {
+                    name: "Session".into(),
+                    used_hours: used,
+                    limit_hours: limit,
+                    left_hours: (limit - used).max(0.0),
+                    unit: "min".into(),
+                });
+            }
+            if used >= limit && limit > 0.0 && resume > 0 {
+                usage.session_resume_minutes = resume;
+            }
+        }
+    }
+    if let Some(monthly) = inner.get("monthly").filter(|v| v.is_object()) {
+        usage.monthly_resets_at = monthly.get("resets_at").and_then(|v| numf(v)).unwrap_or(0.0) as i64;
     }
 }
 
@@ -354,7 +427,8 @@ pub async fn usage_for_blob(http: &reqwest::Client, blob: &str) -> Result<(Strin
     if token.is_empty() || tenant.is_empty() || aws.is_empty() {
         return Err(ApiError::Http("stored credentials lack access_token, tenant_url or aws_account_id".into()));
     }
-    let usage = usage(http, &tenant, &token, &aws).await?;
+    let mut usage = usage(http, &tenant, &token, &aws).await?;
+    merge_session_bucket(http, &tenant, &token, &mut usage).await;
     Ok((current, usage))
 }
 
@@ -392,6 +466,27 @@ mod tests {
         assert_eq!(u.windows[0].used_hours, 1.18);
         assert_eq!(u.plan, "Quick Lite (free trial)");
         assert_eq!(u.trial_ends_at, 1797000000000);
+    }
+
+    #[test]
+    fn invoke_agent_unwraps_double_encoded_body() {
+        let body = json!({"session": {"used": 0, "limit": 100, "resume_in_minutes": 0}, "monthly": {"used": 399, "limit": 600, "resets_at": 1796083200i64}});
+        let inner = json!({"type": "api_response", "status": 200, "body": body.to_string()});
+        let r = json!({"eventResponse": {"invokeAgentResponse": inner.to_string()}});
+        let got = unwrap_invoke_agent(&r).expect("unwrapped");
+        assert_eq!(got["session"]["limit"], 100);
+        assert_eq!(got["monthly"]["resets_at"], 1796083200i64);
+        // bare-object variants also accepted
+        let r2 = json!({"eventResponse": {"invokeAgentResponse": {"body": {"session": {"used": 1}}}}});
+        assert!(unwrap_invoke_agent(&r2).is_some());
+        assert!(unwrap_invoke_agent(&json!({"eventResponse": {}})).is_none());
+    }
+
+    #[test]
+    fn bucket_minutes_reads_numbers_and_strings() {
+        let b = json!({"used": "30", "limit": 100, "resume_in_minutes": 42});
+        assert_eq!(bucket_minutes(&b), Some((30.0, 100.0, 42)));
+        assert!(bucket_minutes(&json!({"limit": 100})).is_none());
     }
 
     #[test]
