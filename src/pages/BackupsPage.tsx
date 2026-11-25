@@ -11,6 +11,10 @@ interface Props {
   onRestored: () => void;
 }
 
+function backupActiveName(backup: BackupInfo, none: string) {
+  return backup.entries.find((entry) => entry.active)?.display_name || backup.active || none;
+}
+
 export default function BackupsPage({ desktopRunning, onRestored }: Props) {
   const t = useT();
   const { toast, confirm } = useUI();
@@ -51,7 +55,7 @@ export default function BackupsPage({ desktopRunning, onRestored }: Props) {
   const doRestore = async (b: BackupInfo) => {
     const ok = await confirm({
       title: t.backups.restoreTitle,
-      message: t.backups.restoreMessage(fmtDate(b.modified), b.accounts, b.active || t.common.none),
+      message: t.backups.restoreMessage(fmtDate(b.modified), b.accounts, backupActiveName(b, t.common.none)),
       confirmLabel: t.common.restore,
     });
     if (!ok) return;
@@ -143,7 +147,7 @@ export default function BackupsPage({ desktopRunning, onRestored }: Props) {
                     </div>
                     {(b.added.length > 0 || b.removed.length > 0 || b.active_changed) && (
                       <div className="tlDiff" title={t.backups.diffTitle}>
-                        {b.active_changed && <span>{t.backups.activeChanges(b.active || t.common.none)}</span>}
+                        {b.active_changed && <span>{t.backups.activeChanges(backupActiveName(b, t.common.none))}</span>}
                         {b.added.length > 0 && <span className="plus">{t.backups.more(b.added.length, b.added.join(t.common.listSep))}</span>}
                         {b.removed.length > 0 && <span className="minus">{t.backups.fewer(b.removed.length, b.removed.join(t.common.listSep))}</span>}
                       </div>
